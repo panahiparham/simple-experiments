@@ -15,6 +15,11 @@ venv records the ``uv.lock`` hash it was built from, and a dispatch re-syncs it 
 if the lock moved. That sync has to happen on the login node: compute nodes have no
 internet, and a lock may name dependencies that come from a git URL.
 
+Whatever ``uv sync`` cannot install is the project's own business: ``[project]
+post_sync`` names a script in the snapshot, run after the sync with ``EXPERIMENT_VENV``
+and ``EXPERIMENT_EXTRAS`` in its environment. Its contents are part of a venv's
+identity, so changing it rebuilds the venvs it applies to.
+
 An experiment's results accumulate in one shared directory on the cluster
 (``results/<label>/``) that every snapshot of that experiment symlinks to. That is what
 lets :func:`sync` pull an experiment down with a single rsync, and it lets the harness's
