@@ -1,134 +1,183 @@
-# experiment-harness
+# simple-experiments
 
-Declarative sweeps, run-packed shards, and a SQLite results store, with a shared
+Declarative sweeps, sharded runs, and a SQLite results store, with a shared
 CLI and optional SLURM dispatch. The harness knows nothing about what a run
-computes: you give it an experiment and one function that computes a shard of
-runs.
+computes: you give it an `Experiment` and one function that computes a shard
+of runs.
 
-Depends on numpy and polars. No jax, no matplotlib, no plotting.
+## Features
 
-## What you supply
+- Declarative sweeps over (possibly nested) frozen-dataclass configs
+- Runs sharing static config fields are packed into shards and computed
+  together in one call
+- Content-addressed run and config ids: extending a sweep by hyperparameter
+  or by seed computes only the delta, and an interrupted sweep resumes where
+  it stopped
+- One SQLite database per experiment, with per-worker part files merged
+  safely after a concurrent sweep
+- One CLI (`status`, `single`, `sweep`, `sync`, `queue`, `logs`) shared
+  between local and SLURM execution
+- Depends only on numpy and polars - no jax, no matplotlib, no plotting
 
-Two things, both passed to `run`:
+## Example usage
 
-| Element | Contract |
-|---|---|
-| `Experiment` | a name, a results directory, and its `Component`s |
-| shard function | `(configs, seeds) -> one result per run`, in the order given |
-
-A `Component` is `Component(name, config, sweep, seeds, shard_size)`: a base
-config, a sweep over it, the seeds to run each point at, and how many runs to
-pack into a shard.
-
-A config is any (possibly nested) frozen dataclass whose `dataclasses.asdict` is
-JSON-serialisable. Its fields are the hyperparameters.
-
-## An experiment
+### Define an experiment
 
 ```python
 # config.py
-from experiment import Component, Experiment
+from dataclasses import dataclass
+from pathlib import Path
+
+from experiment import Component, Experiment, traced
+
+
+@dataclass(frozen=True)
+class OptimizerCfg:
+    LR: float = traced(0.1)
+
+
+@dataclass(frozen=True)
+class Cfg:
+    OPTIMIZER: OptimizerCfg = OptimizerCfg()
+    NUM_STEPS: int = 200
+
 
 EXPERIMENT = Experiment(
-    name="my_experiment",
+    name="quadratic_descent",
     results_dir=Path(__file__).resolve().parent / "results",
     components=[
-        Component(name="baseline", config=Cfg(), seeds=list(range(30)),
+        Component(name="baseline", config=Cfg(), seeds=list(range(20)),
                   shard_size=5),
-        Component(name="tuned", config=Cfg(), sweep={"LR": [1e-3, 3e-4]},
-                  seeds=list(range(30)), shard_size=5),
+        Component(name="tuned", config=Cfg(),
+                  sweep={"OPTIMIZER.LR": [0.01, 0.05, 0.2]},
+                  seeds=list(range(20)), shard_size=5),
     ],
 )
 ```
 
+A config is any (possibly nested) frozen dataclass whose `dataclasses.asdict`
+is JSON-serialisable. `traced` marks a field as a number a run reads as it
+goes; runs that differ only in traced values are handed to the shard
+function together, so it can compute them in one batched call. Everything
+else is static and fixes shapes and objects - sweeping a static field is not
+an error, it just puts those runs in separate shards.
+
+### Run the experiment
+
 ```python
 # run.py
+import numpy as np
+
 from experiment import run
 
-run(EXPERIMENT, process_shard)
+
+def process_shard(configs, seeds):
+    results = []
+    for config, seed in zip(configs, seeds):
+        rng = np.random.default_rng(seed)
+        x = rng.normal()
+        for _ in range(config.NUM_STEPS):
+            x -= config.OPTIMIZER.LR * 2 * x
+        results.append({"final_x": np.array(x)})
+    return results
+
+
+if __name__ == "__main__":
+    run(EXPERIMENT, process_shard)
 ```
+
+The shard function's only contract is `(configs, seeds) -> one result per
+run`, in the order given. It can loop, vectorise, or call out elsewhere -
+the harness does not care.
 
 ```bash
-run.py status                    # runs done, runs pending, shards pending
-run.py sweep --num-workers 6     # here, across 6 local worker processes
-run.py sweep --num-workers 6 --slurm     # the same work as a SLURM array
+run.py status                        # runs done, runs pending, shards pending
+run.py sweep --num-workers 6         # across 6 local worker processes
+run.py sweep --num-workers 6 --slurm # the same work as a SLURM array
 run.py single --component tuned --seed 0
-run.py sync                      # bring the cluster's results home
-run.py queue | logs              # cluster only
+run.py sync                          # bring the cluster's results home
+run.py queue | logs                  # cluster only
 ```
-
-## Overrides
 
 `--set PATH=VALUE` overrides a config field on `single`, `sweep` or `status`,
 using the same dotted paths a sweep uses:
 
 ```bash
-run.py sweep --set AGENT_HYPERS.GAMMA=0.95
-run.py single --component tuned --seed 0 --set AGENT_HYPERS.LR=0.001
+run.py sweep --set OPTIMIZER.LR=0.15
+run.py single --component tuned --seed 0 --set NUM_STEPS=500
 ```
 
 A value is read as the type of the field it replaces. Precedence is the base
 config, then `--set`, then the sweep, so sweeping a path always wins over
 setting it.
 
-## Traced and static fields
-
-A config field is either static or traced. Traced fields are numbers a run reads
-as it goes, and runs that differ only in traced values are computed together in
-one batched call. Everything else is static, and fixes shapes and objects.
-
-Declare traced fields where they are defined:
+### Access results
 
 ```python
-from experiment import traced
+from experiment import load_result, load_runs
 
-@dataclass(frozen=True)
-class Cfg:
-    LR: float = traced(3e-4)
-    GAMMA: float = traced(0.99)
-    HIDDEN_SIZE: int = 64        # static
+df = load_runs(EXPERIMENT, "tuned")  # run_id, config_id, seed, OPTIMIZER.LR, ...
+for run_id, lr in zip(df["run_id"], df["OPTIMIZER.LR"]):
+    result = load_result(EXPERIMENT, "tuned", run_id)
+    print(lr, result["final_x"])
 ```
 
-Sweeping a static field is not an error. Those runs land in separate shards.
+`load_runs` returns a polars DataFrame with one row per run, its config
+flattened to dotted columns, but not the result itself - that stays a
+binary blob until `load_result` or `load_array` reads one run's back.
 
-## Shards
+## Setting up on a cluster
 
-A shard is a sequence of runs sharing every static field, so the whole shard can
-be computed in one call. `shard_size` counts runs; leaving it unset puts every
-batchable run of a component into a single shard.
+`experiment.slurm` reads a `cluster.toml` from your project's repo root,
+which is also how the harness locates that root:
 
-`status` reports the shards still pending and the worker count that would
-saturate them.
+```toml
+[project]
+name = "my-project"                  # the cluster's bare repo is <name>.git
+src_dirs = ["src"]                   # prepended to a job's PYTHONPATH
 
-## Identity and resume
+[cluster]
+host = "my-cluster"                  # an ssh alias that works non-interactively
+root = "$HOME/scratch/my-project"
+account = "my-slurm-account"
 
-`config_id` is a content hash of the config with the seed excluded, and
-`run_id = "<config_id>_s<seed>"`. A run's PRNG derives from its integer seed
-alone, so results do not depend on how work was sharded. Runs already stored are
-dropped before shards are packed, so extending a sweep by hyperparameter or by
-seed computes only the delta, and an interrupted sweep resumes where it stopped.
+[venvs]
+cpu = []
+gpu = ["cuda"]
 
-A sweep's plan is built once, by the process you invoked, and each worker is
-handed its share.
+[slurm]
+time = "01:00:00"
+cpus_per_task = 1
+mem_per_cpu = "4G"
+gpus = 0
 
-## Storage
+[experiments.quadratic_descent]      # per-experiment overrides, keyed by
+time = "00:30:00"                    # the Experiment's name
+```
 
-One database per experiment at `<results_dir>/<name>.db`, holding one table per
-component and one row per run: its id, its config's id, its seed, the config,
-and the result as a binary blob.
+```python
+# setup_cluster.py
+from experiment.slurm import setup
 
-A shared SQLite file is not safe under concurrent writes, so each worker writes
-its own `<name>.parts/part-<k>.db` and those are merged at the end of a sweep.
-Reads union the merged database with any parts still present.
+setup(config_path="cluster.toml")
+```
 
-Read results back with `load_runs` (a polars DataFrame, one row per run, config
-flattened to dotted columns), `load_result` and `load_array`.
+`setup` creates a bare repo on the cluster as the push target, installs
+`uv`, and builds one shared venv per entry in `[venvs]`. A dispatch snapshots
+exactly one commit (`git archive`, no working checkout), so a queued job's
+code can never change underneath it, and a shared venv is re-synced only
+when `uv.lock` moves. A cluster sweep runs as three chained jobs: one
+deciding the plan, an array working through it, and one merging what the
+array wrote.
+
+`EXPERIMENT_LOCAL_MODE=1` runs every "remote" command in a local shell,
+which is how the cluster flow is exercised without a cluster.
 
 ## Migrating an older store
 
-An earlier layout kept one database per component. `run.py migrate` folds those
-into the experiment's database. Run ids are unchanged, so migrated runs still
-count as done. The old files are left in place.
+An earlier layout kept one database per component. `run.py migrate` folds
+those into the experiment's database. Run ids are unchanged, so migrated
+runs still count as done. The old files are left in place.
 
 ## Modules
 
@@ -144,35 +193,15 @@ count as done. The old files are left in place.
 | `experiment.slurm` | cluster dispatch, fetch, queue, logs, and `setup` |
 | `experiment.legacy` | one-shot migration from the per-component store |
 
-## Cluster configuration
-
-`experiment.slurm` reads `cluster.toml` from the repo root, which is also how the
-harness locates that root. The `[project]` table is what keeps it
-project-agnostic:
-
-```toml
-[project]
-name = "my-project"                  # the cluster's bare repo is <name>.git
-src_dirs = ["src", "experiment/src"] # prepended to a job's PYTHONPATH
-```
-
-Resources come from `[slurm]`, with per-experiment overrides in
-`[experiments.<name>]` keyed by the experiment's name.
-
-A cluster sweep runs as three chained jobs: one deciding the plan, an array
-working through it, and one merging what the array wrote.
-
-`EXPERIMENT_LOCAL_MODE=1` runs every "remote" command in a local shell, which is
-how the cluster flow is exercised without a cluster.
-
 ## Tests
 
 ```bash
 uv run pytest
 ```
 
-`experiment/tests/` covers the harness with fake configs and a fake shard
-function: `test_hypers.py` the traced/static split, `test_plan.py` enumeration
-and planning, `test_results.py` the store, `test_legacy.py` migration, and
-`test_commands.py` the CLI end to end. `experiment.slurm` is covered from the
-consuming project's suite instead, against a sandbox repo built by its fixtures.
+`tests/` covers the harness with fake configs and a fake shard function:
+`test_hypers.py` the traced/static split, `test_plan.py` enumeration and
+planning, `test_results.py` the store, `test_legacy.py` migration, and
+`test_commands.py` the CLI end to end. `experiment.slurm` is best covered
+from the consuming project's own test suite, against a sandbox repo built
+by its fixtures.
