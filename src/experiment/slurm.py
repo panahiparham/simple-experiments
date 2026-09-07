@@ -90,13 +90,19 @@ class ClusterConfig:
 
 
 def repo_root() -> Path:
-    """The repo root, found by walking up to the directory holding cluster.toml."""
-    here = Path(__file__).resolve()
+    """The repo root, found by walking up from cwd to the directory holding
+    cluster.toml.
+
+    Walks up from the current working directory rather than this module's own
+    file, since the harness is typically installed as a dependency and does
+    not live inside the project whose root it needs to find.
+    """
+    here = Path.cwd().resolve()
     for path in [here, *here.parents]:
         if (path / DEFAULT_CONFIG_PATH).is_file():
             return path
     raise SystemExit(
-        f"could not locate the repo root (no {DEFAULT_CONFIG_PATH} above this file)"
+        f"could not locate the repo root (no {DEFAULT_CONFIG_PATH} above {here})"
     )
 
 
