@@ -300,13 +300,24 @@ def _push(cfg: ClusterConfig, sha: str, ref: str) -> None:
         )
 
 
-def _lock_hash(sha: str, extras: list[str]) -> str:
-    """Identity of a venv: the locked dependency set plus the extras selected for it.
+def _lock_hash(sha: str, extras: list[str], post_sync: str = "") -> str:
+    """Identity of a venv: the locked dependency set, the extras selected for it,
+    and the post-sync script that runs on top of them.
 
-    Nothing about the source, so a code-only commit reuses the venv untouched.
+    Nothing else about the source, so a code-only commit reuses the venv
+    untouched - but a changed post-sync script rebuilds it, since what that
+    script installs is part of what the venv holds.
     """
     lock = _run(["git", "show", f"{sha}:uv.lock"], cwd=repo_root(), check=True)
     payload = lock.stdout.encode() + b"\0" + "\0".join(sorted(extras)).encode()
+    if post_sync:
+        hook = _run(["git", "show", f"{sha}:{post_sync}"], cwd=repo_root())
+        if hook.returncode != 0:
+            raise SystemExit(
+                f"[project] post_sync is {post_sync!r}, which the commit being "
+                "dispatched does not carry"
+            )
+        payload += b"\0" + hook.stdout.encode()
     return hashlib.sha256(payload).hexdigest()[:12]
 
 
@@ -502,9 +513,10 @@ def dispatch(
 
     extras = cfg.venvs.get(venv, [])
     venv_path = _field(
-        _ssh_script(cfg, _remote_dir() / "build_env.sh",
-                    root, venv, _lock_hash(sha, extras), rundir, cfg.post_sync,
-                    *extras),
+        _ssh_script(
+            cfg, _remote_dir() / "build_env.sh", root, venv,
+            _lock_hash(sha, extras, cfg.post_sync), rundir, cfg.post_sync, *extras
+        ),
         "VENV",
     )
     if not venv_path:
@@ -874,9 +886,11 @@ def setup(*, config_path: str | Path | None = None) -> None:
         for name in ("cpu", "gpu"):
             extras = cfg.venvs.get(name, [])
             built[name] = _field(
-                _ssh_script(cfg, _remote_dir() / "build_env.sh",
-                            root, name, _lock_hash(sha, extras), snapshot,
-                            cfg.post_sync, *extras),
+                _ssh_script(
+                    cfg, _remote_dir() / "build_env.sh", root, name,
+                    _lock_hash(sha, extras, cfg.post_sync), snapshot,
+                    cfg.post_sync, *extras
+                ),
                 "VENV",
             )
     finally:
