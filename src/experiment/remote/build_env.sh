@@ -3,13 +3,16 @@ set -euo pipefail
 
 # experiment/remote/build_env.sh
 # Build or check shared Python environment
-# Usage: bash build_env.sh <root> <name> <lockhash> <snapshot_dir> [extra ...]
+# Usage: bash build_env.sh <root> <name> <lockhash> <snapshot_dir> <post_sync> \
+#          [extra ...]
+# post_sync is a snapshot-relative script to run after the sync, or empty for none.
 
 ROOT="${1:?ROOT required}"
 NAME="${2:?NAME (cpu|gpu) required}"
 LOCKHASH="${3:?LOCKHASH required}"
 SNAPSHOT="${4:?snapshot_dir required}"
-shift 4
+POST_SYNC="${5?post_sync required (empty for none)}"
+shift 5
 # Guarded rather than EXTRAS=("$@"): macOS bash 3.2 (the local-mode tests) treats an
 # empty array under `set -u` as an unbound variable.
 EXTRAS=()
@@ -57,22 +60,18 @@ done
 # snapshot's own source dirs on PYTHONPATH.
 ( cd "$SNAPSHOT" && UV_PROJECT_ENVIRONMENT="$VENV" uv sync "${SYNC_ARGS[@]}" >&2 )
 
-# The atari extra additionally needs the ALE PR #707 wheel force-installed over the
-# PyPI build; GSP_VENV points that script at this shared env instead of $PROJECT/.venv.
-has_extra() {
-  local want="$1" have
-  for have in "${EXTRAS[@]+"${EXTRAS[@]}"}"; do
-    [[ "$have" == "$want" ]] && return 0
-  done
-  return 1
-}
-
-if has_extra atari; then
-  if has_extra cuda; then
-    GSP_VENV="$VENV" bash "$SNAPSHOT/scripts/install_ale_wheel.sh" --cuda >&2
-  else
-    GSP_VENV="$VENV" bash "$SNAPSHOT/scripts/install_ale_wheel.sh" >&2
-  fi
+# A project can name a script of its own to run after the sync - installing a build
+# uv cannot express, say. It runs from the snapshot, is told the venv it must target
+# and the extras that were synced, and decides for itself what to do with them.
+if [ -n "$POST_SYNC" ]; then
+  HOOK="$SNAPSHOT/$POST_SYNC"
+  [ -f "$HOOK" ] || { echo "FATAL: post_sync script not in the snapshot: $POST_SYNC" >&2
+                      exit 1; }
+  SYNCED_EXTRAS=""
+  if [ ${#EXTRAS[@]} -gt 0 ]; then SYNCED_EXTRAS="${EXTRAS[*]}"; fi
+  echo ">> post_sync: $POST_SYNC" >&2
+  ( cd "$SNAPSHOT" \
+    && EXPERIMENT_VENV="$VENV" EXPERIMENT_EXTRAS="$SYNCED_EXTRAS" bash "$HOOK" >&2 )
 fi
 
 # Write stamp only after everything succeeded

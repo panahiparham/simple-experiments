@@ -83,6 +83,7 @@ class ClusterConfig:
     account: str
     project: str
     src_dirs: list[str]
+    post_sync: str
     venvs: dict[str, list[str]]
     slurm: dict[str, Any]
     experiments: dict[str, dict]
@@ -132,6 +133,7 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
         account=cluster.get("account", ""),
         project=data.get("project", {}).get("name") or Path(root).name,
         src_dirs=data.get("project", {}).get("src_dirs", ["src"]),
+        post_sync=data.get("project", {}).get("post_sync", ""),
         venvs=data.get("venvs", {}),
         slurm=data.get("slurm", {}),
         experiments=data.get("experiments", {}),
@@ -501,7 +503,8 @@ def dispatch(
     extras = cfg.venvs.get(venv, [])
     venv_path = _field(
         _ssh_script(cfg, _remote_dir() / "build_env.sh",
-                    root, venv, _lock_hash(sha, extras), rundir, *extras),
+                    root, venv, _lock_hash(sha, extras), rundir, cfg.post_sync,
+                    *extras),
         "VENV",
     )
     if not venv_path:
@@ -872,7 +875,8 @@ def setup(*, config_path: str | Path | None = None) -> None:
             extras = cfg.venvs.get(name, [])
             built[name] = _field(
                 _ssh_script(cfg, _remote_dir() / "build_env.sh",
-                            root, name, _lock_hash(sha, extras), snapshot, *extras),
+                            root, name, _lock_hash(sha, extras), snapshot,
+                            cfg.post_sync, *extras),
                 "VENV",
             )
     finally:
