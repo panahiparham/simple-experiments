@@ -220,3 +220,15 @@ def test_an_error_that_is_not_an_ssh_refusal_is_left_alone(tmp_path):
     cfg = slurm.load_config(write_config(tmp_path, '[cluster]\nhost = "cedar"\n'))
 
     assert slurm._check_auth(cfg, "rsync: link_stat failed: No such file") is None
+
+
+def test_a_reported_field_is_read_from_its_key():
+    assert slurm._field("VENV=/envs/cpu/.venv\n", "VENV") == "/envs/cpu/.venv"
+
+
+def test_the_last_report_of_a_field_wins():
+    assert slurm._field("RUNDIR=/runs/a\nRUNDIR=/runs/b\n", "RUNDIR") == "/runs/b"
+
+
+def test_a_field_the_script_did_not_report_reads_as_empty():
+    assert slurm._field("VENV=/envs/cpu/.venv\n", "RUNDIR") == ""
