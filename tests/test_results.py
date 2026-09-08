@@ -7,6 +7,7 @@ dedup, per-worker parts, merging and reading back.
 from __future__ import annotations
 
 import dataclasses
+import sqlite3
 
 import numpy as np
 import pytest
@@ -18,6 +19,7 @@ from experiment.results import (
     ResultWriter,
     _parts_dir,
     _part_path,
+    _query_ro,
     completed,
     database_path,
     load_array,
@@ -219,3 +221,14 @@ def test_one_array_can_be_loaded_by_name(experiment):
 def test_an_unknown_run_reads_as_nothing(experiment):
     run_everything(experiment)
     assert load_result(experiment, "a", "nosuchrun") == {}
+
+
+def test_a_database_that_is_not_there_reads_as_empty(experiment):
+    assert _query_ro(database_path(experiment), 'SELECT run_id FROM "a"') == []
+
+
+def test_a_query_with_the_wrong_binding_count_is_not_swallowed(experiment):
+    run_everything(experiment)
+    merge_parts(experiment)
+    with pytest.raises(sqlite3.ProgrammingError):
+        _query_ro(database_path(experiment), 'SELECT * FROM "a" WHERE run_id = ?')
