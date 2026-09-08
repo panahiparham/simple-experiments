@@ -90,6 +90,23 @@ def dispatch_single(repo: Path) -> None:
     )
 
 
+def dispatch_sweep(repo: Path, workers: int) -> None:
+    slurm.dispatch(
+        label="toy",
+        run_py=repo / "run.py",
+        mode="sweep",
+        argv=["--num-workers", str(workers)],
+        dry_run=True,
+    )
+
+
+def job_names(out: str) -> list[str]:
+    return [
+        line.split("--job-name=", 1)[1].split(" ", 1)[0]
+        for line in out.strip().splitlines()
+    ]
+
+
 def test_a_missing_config_is_refused_naming_the_path(tmp_path):
     missing = tmp_path / slurm.DEFAULT_CONFIG_PATH
 
@@ -386,3 +403,29 @@ def test_a_dry_run_leaves_no_run_directory_behind(cluster, repo):
     dispatch_single(repo)
 
     assert list((root / "runs").iterdir()) == []
+
+
+def test_a_sweep_chains_a_plan_an_array_and_a_merge(cluster, repo, capsys):
+    cluster()
+
+    dispatch_sweep(repo, 4)
+
+    assert job_names(capsys.readouterr().out) == ["plan", "sweep", "merge"]
+
+
+def test_a_sweep_sizes_its_array_to_the_worker_count(cluster, repo, capsys):
+    cluster()
+
+    dispatch_sweep(repo, 4)
+
+    assert "--array=0-3" in capsys.readouterr().out
+
+
+def test_each_sweep_job_waits_for_the_one_before_it(cluster, repo, capsys):
+    cluster()
+
+    dispatch_sweep(repo, 4)
+
+    out = capsys.readouterr().out
+    assert "afterok:<plan-id>" in out, "the array does not wait for the plan"
+    assert "afterok:<array-id>" in out, "the merge does not wait for the array"
