@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -506,6 +507,20 @@ def test_fetch_compresses_the_transfer(cluster, tmp_path, rsync_calls):
     (remote / "toy.db").write_text("merged")
 
     slurm.fetch(experiment_at(tmp_path / "local"))
+
+    [argv] = rsync_calls
+    assert "z" in argv[1], f"rsync ran as {argv}"
+
+
+def test_fetching_logs_compresses_the_transfer(cluster, repo, rsync_calls):
+    rundir = cluster() / "runs" / "toy_x"
+    (rundir / "logs").mkdir(parents=True)
+    (rundir / "logs" / "toy_0.out").write_text("step 0")
+    state = repo / ".cluster" / "toy.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({"runid": "toy_x", "rundir": str(rundir)}))
+
+    slurm.logs(label="toy")
 
     [argv] = rsync_calls
     assert "z" in argv[1], f"rsync ran as {argv}"
