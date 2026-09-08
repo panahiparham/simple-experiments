@@ -200,3 +200,23 @@ def test_an_ordinary_argument_is_quoted():
     )
 
     assert command.endswith("--overrides 'A=1 B=2'")
+
+
+def test_an_mfa_refusal_says_to_open_the_connection_by_hand(tmp_path):
+    cfg = slurm.load_config(write_config(tmp_path, '[cluster]\nhost = "cedar"\n'))
+
+    with pytest.raises(SystemExit, match="ssh cedar true"):
+        slurm._check_auth(cfg, "cedar: Permission denied (keyboard-interactive)")
+
+
+def test_a_rejected_key_says_to_open_the_connection_by_hand(tmp_path):
+    cfg = slurm.load_config(write_config(tmp_path, '[cluster]\nhost = "cedar"\n'))
+
+    with pytest.raises(SystemExit, match="ssh cedar true"):
+        slurm._check_auth(cfg, "cedar: Permission denied (publickey)")
+
+
+def test_an_error_that_is_not_an_ssh_refusal_is_left_alone(tmp_path):
+    cfg = slurm.load_config(write_config(tmp_path, '[cluster]\nhost = "cedar"\n'))
+
+    assert slurm._check_auth(cfg, "rsync: link_stat failed: No such file") is None
