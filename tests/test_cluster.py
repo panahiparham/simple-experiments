@@ -498,3 +498,25 @@ def test_fetch_from_an_empty_results_dir_is_refused(cluster, tmp_path):
 
     with pytest.raises(SystemExit, match="no results at"):
         slurm.fetch(experiment_at(tmp_path / "local"))
+
+
+@pytest.mark.parametrize(
+    "call",
+    [slurm.status, slurm.logs, slurm.is_queued],
+    ids=["status", "logs", "is_queued"],
+)
+def test_a_command_needing_a_dispatch_is_refused_before_one(cluster, call):
+    cluster()
+
+    with pytest.raises(SystemExit, match="nothing dispatched yet"):
+        call(label="toy")
+
+
+def test_a_dispatch_that_recorded_no_job_ids_is_refused(cluster, repo):
+    cluster()
+    state = repo / ".cluster" / "toy.json"
+    state.parent.mkdir()
+    state.write_text('{"runid": "toy_x", "jobs": {}}')
+
+    with pytest.raises(SystemExit, match="no job ids recorded"):
+        slurm.is_queued(label="toy")
