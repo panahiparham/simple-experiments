@@ -140,3 +140,29 @@ def test_the_wrapped_command_comes_after_every_flag(tmp_path):
         "--wrap",
         "true",
     ]
+
+
+def test_a_spaced_worker_count_is_taken_out_of_the_argv():
+    workers, rest = slurm._num_workers(["--num-workers", "4", "--component", "a"])
+
+    assert (workers, rest) == (4, ["--component", "a"])
+
+
+def test_an_equals_worker_count_is_taken_out_of_the_argv():
+    workers, rest = slurm._num_workers(["--component", "a", "--num-workers=4"])
+
+    assert (workers, rest) == (4, ["--component", "a"])
+
+
+def test_a_sweep_without_a_worker_count_is_refused():
+    with pytest.raises(SystemExit, match="needs --num-workers"):
+        slurm._num_workers(["--component", "a"])
+
+
+def test_a_worker_count_below_one_is_refused():
+    with pytest.raises(SystemExit, match="at least 1"):
+        slurm._num_workers(["--num-workers", "0"])
+
+
+def test_a_single_worker_is_allowed():
+    assert slurm._num_workers(["--num-workers", "1"]) == (1, [])
