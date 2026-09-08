@@ -64,7 +64,6 @@ __all__ = [
     "venv_name",
     "dispatch",
     "fetch",
-    "sync",
     "wipe",
     "is_queued",
     "status",
@@ -658,74 +657,6 @@ def fetch(experiment, *, config_path: str | Path | None = None) -> int:
     if not found:
         raise SystemExit(f"[{experiment.name}] no results at {remote} yet")
     return found
-
-
-def sync(
-    *,
-    label: str,
-    results_dir: Path,
-    run_py: Path,
-    config_path: str | Path | None = None,
-) -> None:
-    """Bring this experiment's cluster results home and merge them in.
-
-    Each remote ``<component>.db`` lands as a local
-    ``<component>.parts/part-cluster.db``, then the experiment's own
-    ``consolidate`` merges it. That is the harness's resume path
-    (``INSERT OR IGNORE`` on ``run_id``), so local runs are never overwritten,
-    laptop and cluster results combine, and re-syncing is a no-op.
-
-    No run id is involved: every commit of an experiment writes into one shared
-    results dir on the cluster, so this always covers the whole experiment.
-
-    Args:
-        label: The experiment name.
-        results_dir: Where the merged component databases end up.
-        run_py: The experiment's ``run.py``, used to run ``consolidate``.
-        config_path: The ``cluster.toml`` to read, defaulting to the repo root's.
-
-    Raises:
-        SystemExit: If nothing has been dispatched yet, or rsync fails.
-    """
-    cfg = load_config(config_path)
-    remote_results = f"{_remote_root(cfg)}/results/{label}"
-    if not _ssh(cfg, f"test -d {shlex.quote(remote_results)} && echo yes",
-                check=False).strip():
-        raise SystemExit(f"[{label}] nothing on the cluster at {remote_results}")
-
-    # Worker parts still present mean a sweep is mid-flight, so those databases are
-    # missing runs. Worth saying, but whatever is complete is still safe to merge.
-    leftover = _ssh(cfg,
-                    f"ls -d {shlex.quote(remote_results)}/*.parts 2>/dev/null || true",
-                    check=False)
-    if leftover.strip():
-        print(f"[{label}] warning: a sweep is still in flight, these are incomplete:\n"
-              + leftover.rstrip(), file=sys.stderr)
-
-    results_dir = Path(results_dir)
-    results_dir.mkdir(parents=True, exist_ok=True)
-    found = 0
-    with tempfile.TemporaryDirectory() as staging:
-        proc = _run(
-            ["rsync", "-a", _remote_path(cfg, remote_results + "/"), staging + "/"]
-        )
-        _check_auth(cfg, proc.stderr)
-        if proc.returncode != 0:
-            raise SystemExit(
-                f"rsync from {remote_results} failed\n{proc.stderr.strip()}"
-            )
-        for db in sorted(Path(staging).glob("*.db")):
-            parts = results_dir / f"{db.stem}.parts"
-            parts.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(db), parts / "part-cluster.db")
-            print(f"  {db.name} -> {db.stem}.parts/part-cluster.db", file=sys.stderr)
-            found += 1
-
-    if not found:
-        raise SystemExit(f"[{label}] no result databases at {remote_results} yet")
-    if subprocess.run([sys.executable, str(run_py), "consolidate"],
-                      cwd=repo_root()).returncode != 0:
-        raise SystemExit(f"[{label}] local consolidate failed")
 
 
 def wipe(*, label: str, config_path: str | Path | None = None) -> None:
