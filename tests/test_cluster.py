@@ -42,6 +42,13 @@ def repo(tmp_path, monkeypatch) -> Path:
     return root
 
 
+def commit_file(repo: Path, name: str, body: str) -> str:
+    (repo / name).write_text(body)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", f"add {name}")
+    return git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
 def test_a_missing_config_is_refused_naming_the_path(tmp_path):
     missing = tmp_path / slurm.DEFAULT_CONFIG_PATH
 
@@ -282,3 +289,33 @@ def test_an_uncommitted_file_blocks_a_dispatch_naming_it(repo):
 
     with pytest.raises(SystemExit, match=r"scratch\.py"):
         slurm._require_clean_tree()
+
+
+def test_different_extras_hash_differently(repo):
+    head = git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    assert slurm._lock_hash(head, ["cuda"]) != slurm._lock_hash(head, [])
+
+
+def test_a_code_only_commit_keeps_the_venv_identity(repo):
+    before = slurm._lock_hash(commit_file(repo, "a.py", "x = 1\n"), [])
+
+    after = slurm._lock_hash(commit_file(repo, "b.py", "y = 2\n"), [])
+
+    assert after == before
+
+
+def test_a_changed_post_sync_script_rebuilds_the_venv(repo):
+    first = commit_file(repo, "hook.sh", "echo one\n")
+    before = slurm._lock_hash(first, [], "hook.sh")
+
+    after = slurm._lock_hash(commit_file(repo, "hook.sh", "echo two\n"), [], "hook.sh")
+
+    assert after != before
+
+
+def test_a_post_sync_missing_from_the_commit_is_refused(repo):
+    head = git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    with pytest.raises(SystemExit, match="post_sync"):
+        slurm._lock_hash(head, [], "missing.sh")
