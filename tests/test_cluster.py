@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from experiment import slurm
+from experiment.design import Component, Experiment
 
 
 @pytest.fixture(autouse=True)
@@ -113,6 +114,14 @@ def jobs_asking_for_a_gpu(out: str) -> list[str]:
         for line in out.strip().splitlines()
         if "--gpus-per-node=" in line
     ]
+
+
+def experiment_at(results_dir: Path) -> Experiment:
+    return Experiment(
+        name="toy",
+        components=[Component(name="a", config=None, seeds=[0])],
+        results_dir=results_dir,
+    )
 
 
 def test_a_missing_config_is_refused_naming_the_path(tmp_path):
@@ -453,3 +462,39 @@ def test_a_gpu_job_runs_the_gpu_venvs_python(cluster, repo, capsys):
     dispatch_single(repo)
 
     assert f"{root}/envs/gpu/.venv/bin/python" in capsys.readouterr().out
+
+
+def test_fetch_brings_the_clusters_database_home(cluster, tmp_path):
+    remote = cluster() / "results" / "toy"
+    remote.mkdir(parents=True)
+    (remote / "toy.db").write_text("merged")
+    local = tmp_path / "local"
+
+    slurm.fetch(experiment_at(local))
+
+    assert (local / "toy.parts" / "part-cluster.db").read_text() == "merged"
+
+
+def test_fetch_brings_a_sweeps_leftover_parts_home(cluster, tmp_path):
+    remote = cluster() / "results" / "toy" / "toy.parts"
+    remote.mkdir(parents=True)
+    (remote / "part-0.db").write_text("worker zero")
+    local = tmp_path / "local"
+
+    slurm.fetch(experiment_at(local))
+
+    assert (local / "toy.parts" / "part-cluster-0.db").read_text() == "worker zero"
+
+
+def test_fetch_before_anything_was_dispatched_is_refused(cluster, tmp_path):
+    cluster()
+
+    with pytest.raises(SystemExit, match="nothing on the cluster"):
+        slurm.fetch(experiment_at(tmp_path / "local"))
+
+
+def test_fetch_from_an_empty_results_dir_is_refused(cluster, tmp_path):
+    (cluster() / "results" / "toy").mkdir(parents=True)
+
+    with pytest.raises(SystemExit, match="no results at"):
+        slurm.fetch(experiment_at(tmp_path / "local"))
