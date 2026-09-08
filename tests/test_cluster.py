@@ -105,3 +105,38 @@ def test_a_full_resource_table_produces_flags_in_command_line_order():
         "--mem=16G",
         "--gpus-per-node=1",
     ]
+
+
+def test_a_job_with_no_account_anywhere_is_refused(tmp_path):
+    cfg = slurm.load_config(write_config(tmp_path, '[cluster]\nroot = "/scratch"\n'))
+
+    with pytest.raises(SystemExit, match="no Slurm account set in"):
+        slurm._sbatch_argv(cfg, {}, wrap="true")
+
+
+def test_a_resource_account_overrides_the_cluster_account(tmp_path):
+    cfg = slurm.load_config(
+        write_config(tmp_path, '[cluster]\naccount = "def-default"\n')
+    )
+
+    argv = slurm._sbatch_argv(cfg, {"account": "def-other"}, wrap="true")
+
+    assert "--account=def-other" in argv
+
+
+def test_the_wrapped_command_comes_after_every_flag(tmp_path):
+    cfg = slurm.load_config(
+        write_config(tmp_path, '[cluster]\naccount = "def-default"\n')
+    )
+
+    argv = slurm._sbatch_argv(cfg, {"time": "1:00:00"}, "--job-name=x", wrap="true")
+
+    assert argv == [
+        "sbatch",
+        "--parsable",
+        "--account=def-default",
+        "--time=1:00:00",
+        "--job-name=x",
+        "--wrap",
+        "true",
+    ]
