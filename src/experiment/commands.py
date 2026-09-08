@@ -198,6 +198,8 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
         return
 
     if args.plan is not None:
+        if args.worker_index is None:
+            raise SystemExit("--plan needs --worker-index")
         mine = pickle.loads(Path(args.plan).read_bytes())[args.worker_index]
         saved = run_shards(experiment, mine, process, worker=args.worker_index)
         print(
