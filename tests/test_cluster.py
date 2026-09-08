@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,27 @@ def write_config(directory: Path, body: str) -> Path:
     path = directory / slurm.DEFAULT_CONFIG_PATH
     path.write_text(body)
     return path
+
+
+def git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True
+    )
+
+
+@pytest.fixture
+def repo(tmp_path, monkeypatch) -> Path:
+    root = tmp_path / "repo"
+    root.mkdir()
+    write_config(root, '[cluster]\nhost = "cedar"\naccount = "def-a"\n')
+    (root / "uv.lock").write_text("version = 1\n")
+    git(root, "init", "-q")
+    git(root, "config", "user.email", "test@example.com")
+    git(root, "config", "user.name", "Test")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "initial")
+    monkeypatch.chdir(root)
+    return root
 
 
 def test_a_missing_config_is_refused_naming_the_path(tmp_path):
@@ -232,3 +254,31 @@ def test_the_last_report_of_a_field_wins():
 
 def test_a_field_the_script_did_not_report_reads_as_empty():
     assert slurm._field("VENV=/envs/cpu/.venv\n", "RUNDIR") == ""
+
+
+def test_the_repo_root_is_the_directory_holding_the_cluster_config(repo, monkeypatch):
+    nested = repo / "experiments" / "toy"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+
+    assert slurm.repo_root() == repo
+
+
+def test_a_tree_with_no_cluster_config_has_no_repo_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(SystemExit, match="could not locate the repo root"):
+        slurm.repo_root()
+
+
+def test_a_clean_tree_dispatches_at_head(repo):
+    head = git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    assert slurm._require_clean_tree() == head
+
+
+def test_an_uncommitted_file_blocks_a_dispatch_naming_it(repo):
+    (repo / "scratch.py").write_text("x = 1\n")
+
+    with pytest.raises(SystemExit, match=r"scratch\.py"):
+        slurm._require_clean_tree()
