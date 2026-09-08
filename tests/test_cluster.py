@@ -107,6 +107,14 @@ def job_names(out: str) -> list[str]:
     ]
 
 
+def jobs_asking_for_a_gpu(out: str) -> list[str]:
+    return [
+        line.split("--job-name=", 1)[1].split(" ", 1)[0]
+        for line in out.strip().splitlines()
+        if "--gpus-per-node=" in line
+    ]
+
+
 def test_a_missing_config_is_refused_naming_the_path(tmp_path):
     missing = tmp_path / slurm.DEFAULT_CONFIG_PATH
 
@@ -429,3 +437,19 @@ def test_each_sweep_job_waits_for_the_one_before_it(cluster, repo, capsys):
     out = capsys.readouterr().out
     assert "afterok:<plan-id>" in out, "the array does not wait for the plan"
     assert "afterok:<array-id>" in out, "the merge does not wait for the array"
+
+
+def test_only_the_array_job_asks_for_a_gpu(cluster, repo, capsys):
+    cluster(gpus=1)
+
+    dispatch_sweep(repo, 2)
+
+    assert jobs_asking_for_a_gpu(capsys.readouterr().out) == ["sweep"]
+
+
+def test_a_gpu_job_runs_the_gpu_venvs_python(cluster, repo, capsys):
+    root = cluster(gpus=1)
+
+    dispatch_single(repo)
+
+    assert f"{root}/envs/gpu/.venv/bin/python" in capsys.readouterr().out
