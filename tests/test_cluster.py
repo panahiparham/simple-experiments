@@ -166,3 +166,37 @@ def test_a_worker_count_below_one_is_refused():
 
 def test_a_single_worker_is_allowed():
     assert slurm._num_workers(["--num-workers", "1"]) == (1, [])
+
+
+def test_the_snapshots_source_dirs_go_on_pythonpath():
+    command = slurm._job_command(
+        "/runs/r1", "run.py", "/envs/cpu/.venv", "single", [], ["src", "lib"]
+    )
+
+    assert "PYTHONPATH=/runs/r1/src:/runs/r1/lib " in command
+
+
+def test_the_array_task_id_is_left_for_sbatch_to_expand():
+    command = slurm._job_command(
+        "/runs/r1",
+        "run.py",
+        "/envs/cpu/.venv",
+        "sweep",
+        ["--worker-index", "$SLURM_ARRAY_TASK_ID"],
+        ["src"],
+    )
+
+    assert command.endswith("--worker-index $SLURM_ARRAY_TASK_ID")
+
+
+def test_an_ordinary_argument_is_quoted():
+    command = slurm._job_command(
+        "/runs/r1",
+        "run.py",
+        "/envs/cpu/.venv",
+        "single",
+        ["--overrides", "A=1 B=2"],
+        ["src"],
+    )
+
+    assert command.endswith("--overrides 'A=1 B=2'")
