@@ -72,3 +72,36 @@ def test_a_job_asking_for_no_gpu_runs_in_the_cpu_venv():
 
 def test_a_job_silent_about_gpus_runs_in_the_cpu_venv():
     assert slurm.venv_name({}) == "cpu"
+
+
+def test_an_explicit_mem_wins_over_mem_per_cpu():
+    assert slurm.resource_flags({"mem": "16G", "mem_per_cpu": "4G"}) == ["--mem=16G"]
+
+
+def test_mem_per_cpu_applies_when_no_total_mem_is_set():
+    assert slurm.resource_flags({"mem_per_cpu": "4G"}) == ["--mem-per-cpu=4G"]
+
+
+def test_a_gpu_request_becomes_a_gpus_per_node_flag():
+    assert slurm.resource_flags({"gpus": 2}) == ["--gpus-per-node=2"]
+
+
+def test_a_zero_gpu_request_asks_for_no_gpu():
+    assert slurm.resource_flags({"gpus": 0}) == []
+
+
+def test_an_empty_resource_table_produces_no_flags():
+    assert slurm.resource_flags({}) == []
+
+
+def test_a_full_resource_table_produces_flags_in_command_line_order():
+    flags = slurm.resource_flags(
+        {"time": "1:00:00", "cpus_per_task": 4, "mem": "16G", "gpus": 1}
+    )
+
+    assert flags == [
+        "--time=1:00:00",
+        "--cpus-per-task=4",
+        "--mem=16G",
+        "--gpus-per-node=1",
+    ]
