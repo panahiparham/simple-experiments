@@ -135,6 +135,7 @@ which is also how the harness locates that root:
 [project]
 name = "my-project"                  # the cluster's bare repo is <name>.git
 src_dirs = ["src"]                   # prepended to a job's PYTHONPATH
+post_sync = "scripts/setup_venv.sh"  # optional, run after a venv is synced
 
 [cluster]
 host = "my-cluster"                  # an ssh alias that works non-interactively
@@ -169,6 +170,14 @@ code can never change underneath it, and a shared venv is re-synced only
 when `uv.lock` moves. A cluster sweep runs as three chained jobs: one
 deciding the plan, an array working through it, and one merging what the
 array wrote.
+
+A project that needs something `uv sync` cannot install can name a script of
+its own with `[project] post_sync`, a path inside the repo. It runs from the
+snapshot once a venv is synced, with `EXPERIMENT_VENV` set to the venv it
+must install into and `EXPERIMENT_EXTRAS` to the extras that venv was built
+with, so one script can serve several venvs. What the script contains counts
+towards the venv's identity, so editing it rebuilds the venvs it applies to,
+and a venv that is already up to date runs nothing.
 
 `EXPERIMENT_LOCAL_MODE=1` runs every "remote" command in a local shell,
 which is how the cluster flow is exercised without a cluster.

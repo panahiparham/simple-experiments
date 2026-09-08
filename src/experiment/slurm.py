@@ -15,6 +15,11 @@ venv records the ``uv.lock`` hash it was built from, and a dispatch re-syncs it 
 if the lock moved. That sync has to happen on the login node: compute nodes have no
 internet, and a lock may name dependencies that come from a git URL.
 
+Whatever ``uv sync`` cannot install is the project's own business: ``[project]
+post_sync`` names a script in the snapshot, run after the sync with ``EXPERIMENT_VENV``
+and ``EXPERIMENT_EXTRAS`` in its environment. Its contents are part of a venv's
+identity, so changing it rebuilds the venvs it applies to.
+
 An experiment's results accumulate in one shared directory on the cluster
 (``results/<label>/``) that every snapshot of that experiment symlinks to. That is what
 lets :func:`sync` pull an experiment down with a single rsync, and it lets the harness's
@@ -83,6 +88,7 @@ class ClusterConfig:
     account: str
     project: str
     src_dirs: list[str]
+    post_sync: str
     venvs: dict[str, list[str]]
     slurm: dict[str, Any]
     experiments: dict[str, dict]
@@ -132,6 +138,7 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
         account=cluster.get("account", ""),
         project=data.get("project", {}).get("name") or Path(root).name,
         src_dirs=data.get("project", {}).get("src_dirs", ["src"]),
+        post_sync=data.get("project", {}).get("post_sync", ""),
         venvs=data.get("venvs", {}),
         slurm=data.get("slurm", {}),
         experiments=data.get("experiments", {}),
@@ -298,13 +305,24 @@ def _push(cfg: ClusterConfig, sha: str, ref: str) -> None:
         )
 
 
-def _lock_hash(sha: str, extras: list[str]) -> str:
-    """Identity of a venv: the locked dependency set plus the extras selected for it.
+def _lock_hash(sha: str, extras: list[str], post_sync: str = "") -> str:
+    """Identity of a venv: the locked dependency set, the extras selected for it,
+    and the post-sync script that runs on top of them.
 
-    Nothing about the source, so a code-only commit reuses the venv untouched.
+    Nothing else about the source, so a code-only commit reuses the venv
+    untouched - but a changed post-sync script rebuilds it, since what that
+    script installs is part of what the venv holds.
     """
     lock = _run(["git", "show", f"{sha}:uv.lock"], cwd=repo_root(), check=True)
     payload = lock.stdout.encode() + b"\0" + "\0".join(sorted(extras)).encode()
+    if post_sync:
+        hook = _run(["git", "show", f"{sha}:{post_sync}"], cwd=repo_root())
+        if hook.returncode != 0:
+            raise SystemExit(
+                f"[project] post_sync is {post_sync!r}, which the commit being "
+                "dispatched does not carry"
+            )
+        payload += b"\0" + hook.stdout.encode()
     return hashlib.sha256(payload).hexdigest()[:12]
 
 
@@ -500,8 +518,10 @@ def dispatch(
 
     extras = cfg.venvs.get(venv, [])
     venv_path = _field(
-        _ssh_script(cfg, _remote_dir() / "build_env.sh",
-                    root, venv, _lock_hash(sha, extras), rundir, *extras),
+        _ssh_script(
+            cfg, _remote_dir() / "build_env.sh", root, venv,
+            _lock_hash(sha, extras, cfg.post_sync), rundir, cfg.post_sync, *extras
+        ),
         "VENV",
     )
     if not venv_path:
@@ -871,8 +891,11 @@ def setup(*, config_path: str | Path | None = None) -> None:
         for name in ("cpu", "gpu"):
             extras = cfg.venvs.get(name, [])
             built[name] = _field(
-                _ssh_script(cfg, _remote_dir() / "build_env.sh",
-                            root, name, _lock_hash(sha, extras), snapshot, *extras),
+                _ssh_script(
+                    cfg, _remote_dir() / "build_env.sh", root, name,
+                    _lock_hash(sha, extras, cfg.post_sync), snapshot,
+                    cfg.post_sync, *extras
+                ),
                 "VENV",
             )
     finally:
