@@ -49,6 +49,47 @@ def commit_file(repo: Path, name: str, body: str) -> str:
     return git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
+@pytest.fixture
+def cluster(repo, monkeypatch):
+    def build(*, gpus: int = 0) -> Path:
+        root = repo.parent / "cluster"
+        write_config(
+            repo,
+            f'[cluster]\nhost = "cedar"\nroot = "{root}"\naccount = "def-a"\n'
+            '\n[project]\nname = "toy"\nsrc_dirs = ["src"]\n'
+            f'\n[slurm]\ntime = "0:10:00"\ncpus_per_task = 2\ngpus = {gpus}\n'
+            '\n[venvs]\ncpu = []\ngpu = []\n',
+        )
+        (repo / "src").mkdir()
+        (repo / "src" / "toy.py").write_text("")
+        (repo / "run.py").write_text("")
+        sha = commit_file(repo, "pyproject.toml", '[project]\nname = "toy"\n')
+        git(repo, "init", "--bare", "-q", str(root / "toy.git"))
+        git(repo, "remote", "add", "cluster-cedar", str(root / "toy.git"))
+        for name in ("cpu", "gpu"):
+            binary = root / "envs" / name / ".venv" / "bin" / "python"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("")
+            binary.chmod(0o755)
+            (root / "envs" / name / "lock.sha256").write_text(
+                slurm._lock_hash(sha, [], "")
+            )
+        monkeypatch.setenv("EXPERIMENT_LOCAL_MODE", "1")
+        return root
+
+    return build
+
+
+def dispatch_single(repo: Path) -> None:
+    slurm.dispatch(
+        label="toy",
+        run_py=repo / "run.py",
+        mode="single",
+        argv=["--seed", "0"],
+        dry_run=True,
+    )
+
+
 def test_a_missing_config_is_refused_naming_the_path(tmp_path):
     missing = tmp_path / slurm.DEFAULT_CONFIG_PATH
 
@@ -319,3 +360,29 @@ def test_a_post_sync_missing_from_the_commit_is_refused(repo):
 
     with pytest.raises(SystemExit, match="post_sync"):
         slurm._lock_hash(head, [], "missing.sh")
+
+
+def test_a_dry_run_reports_the_sbatch_command_it_would_run(cluster, repo, capsys):
+    cluster()
+
+    dispatch_single(repo)
+
+    assert "sbatch --parsable --account=def-a --time=0:10:00 --cpus-per-task=2" in (
+        capsys.readouterr().out
+    )
+
+
+def test_a_dry_run_records_no_dispatch(cluster, repo):
+    cluster()
+
+    dispatch_single(repo)
+
+    assert not (repo / ".cluster").exists()
+
+
+def test_a_dry_run_leaves_no_run_directory_behind(cluster, repo):
+    root = cluster()
+
+    dispatch_single(repo)
+
+    assert list((root / "runs").iterdir()) == []
