@@ -13,6 +13,7 @@ import pytest
 
 from experiment.hypers import (
     TRACED,
+    coerce_value,
     get_path,
     merge_traced,
     set_path,
@@ -163,3 +164,18 @@ def test_a_config_with_no_traced_fields_splits_to_itself():
     static, dynamic = split_traced(Plain())
     assert static == Plain()
     assert dynamic == {}
+
+
+@pytest.mark.parametrize("text", ["true", "yes", "1", "TRUE", " true "])
+def test_a_true_spelling_reads_as_true(text):
+    assert coerce_value(text, False) is True
+
+
+@pytest.mark.parametrize("text", ["false", "no", "0", "FALSE", " false "])
+def test_a_false_spelling_reads_as_false(text):
+    assert coerce_value(text, True) is False
+
+
+def test_a_value_that_is_neither_true_nor_false_is_rejected_naming_it():
+    with pytest.raises(ValueError, match="maybe"):
+        coerce_value("maybe", True)
