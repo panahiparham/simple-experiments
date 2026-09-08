@@ -635,7 +635,7 @@ def fetch(experiment, *, config_path: str | Path | None = None) -> int:
     parts.mkdir(parents=True, exist_ok=True)
     found = 0
     with tempfile.TemporaryDirectory() as staging:
-        proc = _run(["rsync", "-a", _remote_path(cfg, remote + "/"), staging + "/"])
+        proc = _run(["rsync", "-az", _remote_path(cfg, remote + "/"), staging + "/"])
         _check_auth(cfg, proc.stderr)
         if proc.returncode != 0:
             raise SystemExit(f"rsync from {remote} failed\n{proc.stderr.strip()}")
@@ -762,7 +762,7 @@ def logs(
     dest = repo_root() / ".cluster" / "logs" / label
     dest.mkdir(parents=True, exist_ok=True)
 
-    proc = _run(["rsync", "-a", _remote_path(cfg, state["rundir"] + "/logs/"),
+    proc = _run(["rsync", "-az", _remote_path(cfg, state["rundir"] + "/logs/"),
                  str(dest) + "/"])
     _check_auth(cfg, proc.stderr)
     if proc.returncode != 0:

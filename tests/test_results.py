@@ -131,6 +131,21 @@ def test_a_run_may_produce_nothing(experiment):
     assert run.id in completed(experiment)[shard.component]
 
 
+def test_a_redundant_result_is_stored_compressed(experiment):
+    shard = plan_experiment(experiment)[0]
+    arrays = {"reward": np.ones(100_000, dtype=np.float32)}
+    with ResultWriter(experiment, 0) as writer:
+        writer.save(shard, [arrays for _ in shard.runs])
+    stored = _query_ro(
+        writer.path,
+        f'SELECT result FROM "{shard.component}" WHERE run_id = ?',
+        (shard.runs[0].id,),
+    )[0][0]
+    assert len(stored) < arrays["reward"].nbytes / 10, (
+        f"{len(stored)} bytes stored for {arrays['reward'].nbytes} bytes of array"
+    )
+
+
 # --- merging ----------------------------------------------------------------
 
 
