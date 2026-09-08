@@ -179,3 +179,12 @@ def test_a_false_spelling_reads_as_false(text):
 def test_a_value_that_is_neither_true_nor_false_is_rejected_naming_it():
     with pytest.raises(ValueError, match="maybe"):
         coerce_value("maybe", True)
+
+
+def test_a_type_the_coercion_does_not_know_is_read_as_a_python_literal():
+    assert coerce_value("[1, 2]", [0]) == [1, 2]
+
+
+def test_a_value_that_is_not_a_literal_at_all_is_rejected_naming_it():
+    with pytest.raises(ValueError, match="nope"):
+        coerce_value("nope", [0])
