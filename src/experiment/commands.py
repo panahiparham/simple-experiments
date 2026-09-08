@@ -285,7 +285,7 @@ def _status(experiment: Experiment, argv: list[str]) -> None:
 
     overrides = parse_overrides(args.overrides)
     stored = completed(experiment)
-    totals = [0, 0, 0]  # runs, done, pending shards
+    total_runs = total_done = total_shards = 0
     for component in _select(experiment, args.component):
         runs = component_runs(component, overrides)
         done = stored.get(component.name, set())
@@ -296,19 +296,21 @@ def _status(experiment: Experiment, argv: list[str]) -> None:
             else component.shard_size
         )
         shards = pack_shards(component.name, pending, size)
-        totals[0] += len(runs)
-        totals[1] += len(runs) - len(pending)
-        totals[2] += len(shards)
+        total_runs += len(runs)
+        total_done += len(runs) - len(pending)
+        total_shards += len(shards)
         print(
             f"[{component.name}] {len(runs)} run(s): "
             f"{len(runs) - len(pending)} done, {len(pending)} pending "
             f"in {len(shards)} shard(s)"
         )
 
-    runs, done, shards = totals
-    summary = f"{experiment.name}: {runs} run(s), {done} done, {runs - done} pending"
-    if shards:
-        summary += f" in {shards} shard(s) -> up to --num-workers {shards}"
+    summary = (
+        f"{experiment.name}: {total_runs} run(s), {total_done} done, "
+        f"{total_runs - total_done} pending"
+    )
+    if total_shards:
+        summary += f" in {total_shards} shard(s) -> up to --num-workers {total_shards}"
     print(summary)
 
 
