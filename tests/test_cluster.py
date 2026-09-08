@@ -486,6 +486,31 @@ def test_fetch_brings_a_sweeps_leftover_parts_home(cluster, tmp_path):
     assert (local / "toy.parts" / "part-cluster-0.db").read_text() == "worker zero"
 
 
+@pytest.fixture
+def rsync_calls(monkeypatch) -> list[list[str]]:
+    recorded: list[list[str]] = []
+    real = slurm._run
+
+    def record(argv, **kwargs):
+        if argv[0] == "rsync":
+            recorded.append(argv)
+        return real(argv, **kwargs)
+
+    monkeypatch.setattr(slurm, "_run", record)
+    return recorded
+
+
+def test_fetch_compresses_the_transfer(cluster, tmp_path, rsync_calls):
+    remote = cluster() / "results" / "toy"
+    remote.mkdir(parents=True)
+    (remote / "toy.db").write_text("merged")
+
+    slurm.fetch(experiment_at(tmp_path / "local"))
+
+    [argv] = rsync_calls
+    assert "z" in argv[1], f"rsync ran as {argv}"
+
+
 def test_fetch_before_anything_was_dispatched_is_refused(cluster, tmp_path):
     cluster()
 
