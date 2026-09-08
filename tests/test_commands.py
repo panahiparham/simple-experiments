@@ -210,6 +210,13 @@ def test_a_worker_runs_only_its_own_share(experiment, tmp_path):
     assert sum(len(v) for v in completed(experiment).values()) == expected
 
 
+def test_a_worker_without_an_index_is_refused(experiment, tmp_path):
+    plan_file(experiment, tmp_path, 3)
+    path = tmp_path / "plan.pickle"
+    with pytest.raises(SystemExit, match="needs --worker-index"):
+        run(experiment, refuse, ["sweep", "--plan", str(path)])
+
+
 def test_the_steps_together_do_what_one_sweep_does(experiment, tmp_path):
     path = tmp_path / "plan.pickle"
     for index in range(len(plan_file(experiment, tmp_path, 3))):

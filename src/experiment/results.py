@@ -133,7 +133,7 @@ def _query_ro(path: str | Path, sql: str, params: tuple = ()) -> list[tuple]:
     try:
         conn.execute("PRAGMA busy_timeout=5000")
         return conn.execute(sql, params).fetchall()
-    except sqlite3.Error:
+    except sqlite3.OperationalError:
         return []
     finally:
         conn.close()

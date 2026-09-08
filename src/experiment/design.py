@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -65,7 +66,7 @@ class Component:
     name: str
     config: Any
     sweep: dict[str, list] = dataclasses.field(default_factory=dict)
-    seeds: tuple[int, ...] = ()
+    seeds: Sequence[int] = ()
     shard_size: int | None = None
 
     def __post_init__(self) -> None:
@@ -92,7 +93,7 @@ class Experiment:
     """
 
     name: str
-    components: tuple[Component, ...]
+    components: Sequence[Component]
     results_dir: Path
 
     def __post_init__(self) -> None:
