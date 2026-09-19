@@ -309,3 +309,47 @@ class WeeklyBenchmarkConfig:
     lock: Lock
     out_dir: Path
     max_attempts: int = 3
+
+
+@dataclasses.dataclass(frozen=True)
+class Facts:
+    """What a tick observed this time, for :func:`decide` to act on.
+
+    Bundled rather than passed as separate arguments since every phase of
+    ``decide`` needs a different subset, and a new fact (e.g. a second
+    remote to compare against) should not change every phase's signature.
+
+    Attributes:
+        now: The current time.
+        remote_sha: The commit that should be benchmarked next.
+        job_status: The dispatched job's status, if one is in flight and
+            its token wasn't lost to a crash; ``None`` otherwise.
+        history: The suite's durable completion history.
+    """
+
+    now: datetime
+    remote_sha: str
+    job_status: JobStatus | None
+    history: DurableHistory
+
+
+def _decide_waiting(
+    state: TransientState, facts: Facts, config: WeeklyBenchmarkConfig
+) -> tuple[TransientState, Action]:
+    """``decide``'s ``WAITING`` branch: wait, or dispatch what's due."""
+    if facts.now < state.next_wake_at:
+        return state, Sleep()
+
+    if facts.remote_sha == facts.history.last_completed_sha:
+        next_wake_at = config.next_scheduled_wake(facts.now)
+        return dataclasses.replace(state, next_wake_at=next_wake_at), Sleep()
+
+    dispatching = dataclasses.replace(
+        state,
+        phase=Phase.DISPATCHED,
+        dispatch_sha=facts.remote_sha,
+        dispatch_token=None,
+        attempt_count=0,
+        last_error=None,
+    )
+    return dispatching, Submit(facts.remote_sha)
