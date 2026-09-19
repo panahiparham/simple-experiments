@@ -24,13 +24,13 @@ from experiment.plan import (
     pack_shards,
     plan_experiment,
 )
-from experiment.results import _parts_dir, completed, merge_parts
+from experiment.results import _parts_dir, completed, delete_runs, merge_parts
 from experiment.runner import ShardFn, run_shards
 
 __all__ = ["parse_overrides", "run"]
 
 
-MODES = ("single", "sweep", "status", "queue", "sync", "logs", "migrate")
+MODES = ("single", "sweep", "status", "delete", "queue", "sync", "logs", "migrate")
 
 
 def parse_overrides(assignments: Sequence[str]) -> dict[str, str]:
@@ -131,6 +131,49 @@ def _single(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
     saved = run_shards(experiment, shards, process)
     merge_parts(experiment)
     print(f"{label} stored {saved} run(s) for seed {args.seed}")
+
+
+def _delete_targets(
+    experiment: Experiment, args: argparse.Namespace
+) -> tuple[str, list[str]]:
+    """Resolve what ``delete`` should act on: a component name and run ids.
+
+    ``--run-id`` bypasses recomputing the component's current runs entirely,
+    for a run whose config has since changed and so no longer resolves to the
+    same id.
+
+    Raises:
+        SystemExit: If the given flags don't identify a component, or a
+            component without either ``--seed`` or ``--run-id``.
+    """
+    if args.run_ids is not None and args.component is None:
+        raise SystemExit("--run-id needs --component")
+    if args.run_ids is not None:
+        return args.component, list(args.run_ids)
+
+    if args.component is None or args.seed is None:
+        raise SystemExit("delete needs --component and --seed, or --run-id")
+    picked = _one_component(experiment, args.component)
+    overrides = parse_overrides(args.overrides)
+    targets = [
+        run.id for run in component_runs(picked, overrides) if run.seed == args.seed
+    ]
+    return picked.name, targets
+
+
+def _delete(experiment: Experiment, argv: list[str]) -> None:
+    """Delete stored runs, targeted by component+seed or given directly by id."""
+    parser = argparse.ArgumentParser(prog="run.py delete")
+    parser.add_argument("--component", default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--run-id", dest="run_ids", nargs="+", default=None)
+    _add_override_flag(parser)
+    args = parser.parse_args(argv)
+
+    component, targets = _delete_targets(experiment, args)
+
+    removed = delete_runs(experiment, component, targets)
+    print(f"[{experiment.name}:{component}] deleted {removed} run(s)")
 
 
 def _sweep_parser() -> argparse.ArgumentParser:
@@ -455,5 +498,7 @@ def run(
         _sweep(experiment, process, rest)
     elif mode == "status":
         _status(experiment, rest)
+    elif mode == "delete":
+        _delete(experiment, rest)
     elif mode == "migrate":
         _migrate(experiment, rest)
