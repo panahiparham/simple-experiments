@@ -7,8 +7,10 @@ raise on use is enough to prove decide() never touches them.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +29,7 @@ from experiment.weekly import (
     apply,
     apply_error,
     decide,
+    tick,
 )
 
 NOW = datetime(2026, 1, 1, 12, 0)
@@ -280,3 +283,166 @@ def test_apply_error_rejects_actions_with_no_side_effect(action):
     state = waiting()
     with pytest.raises(ValueError, match="no side effect"):
         apply_error(state, action, "should never happen")
+
+
+# --- tick -----------------------------------------------------------------
+
+
+class FakeLock:
+    def __init__(self, *, held: bool = False):
+        self.held = held
+        self.acquired = 0
+
+    def try_acquire(self):
+        if self.held:
+            return None
+        self.acquired += 1
+        return contextlib.nullcontext()
+
+
+class FakeStore:
+    def __init__(self, initial=None):
+        self._value = initial
+        self.saves: list = []
+
+    def load(self):
+        return self._value
+
+    def save(self, value):
+        self._value = value
+        self.saves.append(value)
+
+
+class FakeDispatcher:
+    def __init__(self):
+        self.tokens: dict[str, str] = {}
+        self.statuses: dict[str, JobStatus] = {}
+        self.submit_calls: list[str] = []
+
+    def submit(self, sha: str) -> str:
+        self.submit_calls.append(sha)
+        return self.tokens.setdefault(sha, f"tok-{sha}")
+
+    def poll(self, token: str) -> JobStatus:
+        return self.statuses.get(token, JobStatus.RUNNING)
+
+
+class FakeReporter:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def __call__(self, sha, experiment, out_dir):
+        self.calls.append(sha)
+        return [out_dir / "plot.png"]
+
+
+class FakePublisher:
+    def __init__(self, *, fail: bool = False):
+        self.fail = fail
+        self.published: dict[str, str] = {}
+
+    def publish(self, sha, artifacts):
+        if self.fail:
+            raise RuntimeError("publish failed")
+        return self.published.setdefault(sha, f"pr-{sha}")
+
+
+@dataclasses.dataclass
+class Fakes:
+    lock: FakeLock
+    transient_store: FakeStore
+    history_store: FakeStore
+    dispatcher: FakeDispatcher
+    reporter: FakeReporter
+    publisher: FakePublisher
+
+
+def make_tick_config(experiment, **opts) -> tuple[WeeklyBenchmarkConfig, Fakes]:
+    remote_sha = opts.get("remote_sha", "remote-sha")
+    fakes = Fakes(
+        lock=FakeLock(held=opts.get("lock_held", False)),
+        transient_store=FakeStore(opts.get("transient")),
+        history_store=FakeStore(opts.get("history")),
+        dispatcher=FakeDispatcher(),
+        reporter=FakeReporter(),
+        publisher=FakePublisher(fail=opts.get("publish_fails", False)),
+    )
+    config = WeeklyBenchmarkConfig(
+        label="bench",
+        experiment=experiment,
+        remote_sha=lambda: remote_sha,
+        next_scheduled_wake=lambda now: now + timedelta(days=7),
+        poll_interval=lambda now: now + timedelta(minutes=20),
+        dispatcher=fakes.dispatcher,
+        reporter=fakes.reporter,
+        publisher=fakes.publisher,
+        transient_store=fakes.transient_store,
+        history_store=fakes.history_store,
+        lock=fakes.lock,
+        out_dir=Path("/out"),
+        max_attempts=3,
+    )
+    return config, fakes
+
+
+def test_tick_does_nothing_when_the_lock_is_held(experiment):
+    state = waiting(next_wake_at=NOW)
+    config, fakes = make_tick_config(experiment, transient=state, lock_held=True)
+    result = tick(config, NOW)
+    assert result == state
+    assert fakes.dispatcher.submit_calls == []
+
+
+def test_tick_before_due_returns_state_untouched(experiment):
+    state = waiting(next_wake_at=NOW + timedelta(days=1))
+    config, fakes = make_tick_config(experiment, transient=state)
+    result = tick(config, NOW)
+    assert result == state
+    assert fakes.transient_store.saves == []
+
+
+def test_tick_dispatches_a_due_new_sha(experiment):
+    state = waiting(next_wake_at=NOW)
+    config, fakes = make_tick_config(experiment, remote_sha="s1", transient=state)
+    result = tick(config, NOW)
+    assert fakes.dispatcher.submit_calls == ["s1"]
+    assert result.phase == Phase.DISPATCHED
+    assert result.dispatch_sha == "s1"
+    assert result.dispatch_token == "tok-s1"
+
+
+def test_tick_resubmits_after_a_crash_lost_the_token(experiment):
+    state = waiting(phase=Phase.DISPATCHED, dispatch_sha="s1", dispatch_token=None)
+    config, fakes = make_tick_config(experiment, transient=state)
+    result = tick(config, NOW)
+    assert fakes.dispatcher.submit_calls == ["s1"]
+    assert result.dispatch_token == "tok-s1"
+
+
+def test_tick_finishes_a_succeeded_job_and_records_history(experiment):
+    state = waiting(phase=Phase.DISPATCHED, dispatch_sha="s1", dispatch_token="tok-s1")
+    config, fakes = make_tick_config(experiment, transient=state)
+    fakes.dispatcher.statuses["tok-s1"] = JobStatus.SUCCEEDED
+
+    result = tick(config, NOW)
+
+    assert fakes.reporter.calls == ["s1"]
+    assert fakes.publisher.published == {"s1": "pr-s1"}
+    assert result.phase == Phase.WAITING
+    assert result.last_publish_id == "pr-s1"
+    assert fakes.history_store.saves == [
+        DurableHistory(last_completed_sha="s1", last_completed_at=NOW)
+    ]
+
+
+def test_tick_folds_a_publish_failure_into_failed(experiment):
+    state = waiting(phase=Phase.DISPATCHED, dispatch_sha="s1", dispatch_token="tok-s1")
+    config, fakes = make_tick_config(experiment, transient=state, publish_fails=True)
+    fakes.dispatcher.statuses["tok-s1"] = JobStatus.SUCCEEDED
+
+    result = tick(config, NOW)
+
+    assert result.phase == Phase.FAILED
+    assert result.attempt_count == 1
+    assert result.last_error == "publish failed"
+    assert fakes.history_store.saves == []
