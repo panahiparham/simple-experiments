@@ -23,6 +23,7 @@ __all__ = [
     "Action",
     "Dispatcher",
     "DurableHistory",
+    "Facts",
     "Finish",
     "HistoryStore",
     "JobStatus",
@@ -36,6 +37,7 @@ __all__ = [
     "TransientState",
     "TransientStore",
     "WeeklyBenchmarkConfig",
+    "decide",
 ]
 
 
@@ -390,3 +392,56 @@ def _decide_finishing(state: TransientState) -> tuple[TransientState, Action]:
     if state.dispatch_sha is None or state.dispatch_token is None:
         raise ValueError("FINISHING state is missing dispatch_sha/dispatch_token")
     return state, Finish(state.dispatch_sha, state.dispatch_token)
+
+
+def _decide_failed(
+    state: TransientState, facts: Facts, config: WeeklyBenchmarkConfig
+) -> tuple[TransientState, Action]:
+    """``decide``'s ``FAILED`` branch: retry a fixable failure, or hold.
+
+    Behaves like ``WAITING`` for due-checking, so a transient failure (a
+    cluster outage, say) is retried on the same cadence - but
+    ``attempt_count`` carries across ``FAILED`` and once it reaches
+    ``config.max_attempts`` for this sha, holds rather than retrying every
+    tick, until a new commit gives it a fresh attempt budget.
+    """
+    if state.dispatch_sha is None:
+        raise ValueError("FAILED state has no dispatch_sha")
+
+    if facts.remote_sha != state.dispatch_sha:
+        reset = dataclasses.replace(
+            state,
+            phase=Phase.WAITING,
+            next_wake_at=facts.now,
+            attempt_count=0,
+            last_error=None,
+        )
+        return _decide_waiting(reset, facts, config)
+
+    if state.attempt_count >= config.max_attempts or facts.now < state.next_wake_at:
+        return state, Sleep()
+
+    dispatching = dataclasses.replace(
+        state, phase=Phase.DISPATCHED, dispatch_token=None
+    )
+    return dispatching, Submit(state.dispatch_sha)
+
+
+def decide(
+    state: TransientState, facts: Facts, config: WeeklyBenchmarkConfig
+) -> tuple[TransientState, Action]:
+    """Pure transition function - no I/O, no side effects.
+
+    Returns the state to persist *before* the returned ``Action``'s side
+    effect runs, paired with that ``Action``. Never invents a dispatch
+    token, completion timestamp, or publish id - those only exist after
+    their side effect has actually run; ``apply``/``apply_error`` fold
+    such a result back into state once the caller has it.
+    """
+    if state.phase is Phase.WAITING:
+        return _decide_waiting(state, facts, config)
+    if state.phase is Phase.DISPATCHED:
+        return _decide_dispatched(state, facts, config)
+    if state.phase is Phase.FINISHING:
+        return _decide_finishing(state)
+    return _decide_failed(state, facts, config)
