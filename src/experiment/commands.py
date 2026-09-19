@@ -167,13 +167,24 @@ def _delete(experiment: Experiment, argv: list[str]) -> None:
     parser.add_argument("--component", default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--run-id", dest="run_ids", nargs="+", default=None)
+    parser.add_argument("--yes", action="store_true")
     _add_override_flag(parser)
     args = parser.parse_args(argv)
 
     component, targets = _delete_targets(experiment, args)
 
+    label = f"[{experiment.name}:{component}]"
+    if not targets:
+        print(f"{label} no matching run(s)")
+        return
+    if not args.yes:
+        for target in targets:
+            print(f"{label} would delete {target}")
+        print(f"{label} {len(targets)} run(s); pass --yes to delete")
+        return
+
     removed = delete_runs(experiment, component, targets)
-    print(f"[{experiment.name}:{component}] deleted {removed} run(s)")
+    print(f"{label} deleted {removed} run(s)")
 
 
 def _sweep_parser() -> argparse.ArgumentParser:
