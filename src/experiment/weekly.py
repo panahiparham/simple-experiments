@@ -378,3 +378,15 @@ def _decide_dispatched(
         return finishing, Finish(state.dispatch_sha, state.dispatch_token)
 
     return state, MarkFailed(f"job for {state.dispatch_sha} failed")
+
+
+def _decide_finishing(state: TransientState) -> tuple[TransientState, Action]:
+    """``decide``'s ``FINISHING`` branch: retry until publish succeeds.
+
+    Always re-issues ``Finish`` - safe because ``Publisher.publish`` is
+    required to be idempotent, so a crash between a prior Finish attempt
+    and ``apply`` just means retrying, not duplicating anything.
+    """
+    if state.dispatch_sha is None or state.dispatch_token is None:
+        raise ValueError("FINISHING state is missing dispatch_sha/dispatch_token")
+    return state, Finish(state.dispatch_sha, state.dispatch_token)
