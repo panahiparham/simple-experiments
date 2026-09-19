@@ -17,11 +17,12 @@ from experiment.hypers import traced
 from experiment.plan import assign_shards, plan_experiment
 from experiment.results import (
     ResultWriter,
-    _parts_dir,
     _part_path,
+    _parts_dir,
     _query_ro,
     completed,
     database_path,
+    delete_runs,
     load_array,
     load_result,
     load_runs,
@@ -185,6 +186,50 @@ def test_results_survive_a_merge(experiment):
     before = load_runs(experiment, "a").height
     merge_parts(experiment)
     assert load_runs(experiment, "a").height == before == 3
+
+
+# --- deleting -----------------------------------------------------------------
+
+
+def test_deleting_a_run_removes_it_from_completed(experiment):
+    run_everything(experiment)
+    merge_parts(experiment)
+    run_id = next(iter(completed(experiment)["a"]))
+    assert delete_runs(experiment, "a", [run_id]) == 1
+    assert run_id not in completed(experiment)["a"]
+
+
+def test_deleting_leaves_other_runs_and_components_untouched(experiment):
+    run_everything(experiment)
+    merge_parts(experiment)
+    run_id = next(iter(completed(experiment)["a"]))
+    delete_runs(experiment, "a", [run_id])
+    assert len(completed(experiment)["a"]) == 2
+    assert len(completed(experiment)["b"]) == 2
+
+
+def test_deleting_an_unknown_run_id_is_a_no_op(experiment):
+    run_everything(experiment)
+    merge_parts(experiment)
+    assert delete_runs(experiment, "a", ["nosuchrun"]) == 0
+    assert len(completed(experiment)["a"]) == 3
+
+
+def test_deleting_from_an_empty_store_is_a_no_op(experiment):
+    assert delete_runs(experiment, "a", ["nosuchrun"]) == 0
+
+
+def test_deleting_nothing_is_a_no_op(experiment):
+    run_everything(experiment)
+    merge_parts(experiment)
+    assert delete_runs(experiment, "a", []) == 0
+
+
+def test_deleting_before_a_merge_leaves_the_part_untouched(experiment):
+    run_everything(experiment)
+    run_id = next(iter(completed(experiment)["a"]))
+    assert delete_runs(experiment, "a", [run_id]) == 0
+    assert run_id in completed(experiment)["a"]
 
 
 # --- reading ----------------------------------------------------------------

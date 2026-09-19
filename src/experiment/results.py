@@ -38,6 +38,7 @@ __all__ = [
     "completed",
     "ResultWriter",
     "merge_parts",
+    "delete_runs",
     "load_runs",
     "load_result",
     "load_array",
@@ -339,6 +340,36 @@ def _flatten(config: dict, prefix: str = "") -> dict:
         else:
             flat[path] = value
     return flat
+
+
+def delete_runs(experiment: Experiment, component: str, run_ids: Sequence[str]) -> int:
+    """Remove stored runs from the merged database.
+
+    Never touches a sweep's in-progress parts - only the merged database, which
+    is the store a completed sweep or single run is read from.
+
+    Args:
+        experiment: The experiment whose database to modify.
+        component: The component whose table to delete from.
+        run_ids: The run ids to remove.
+
+    Returns:
+        The number of rows actually deleted.
+    """
+    path = database_path(experiment)
+    if not run_ids or not path.exists() or component not in _tables(path):
+        return 0
+    conn = _connect_write(path)
+    try:
+        placeholders = ", ".join("?" for _ in run_ids)
+        cursor = conn.execute(
+            f'DELETE FROM "{component}" WHERE run_id IN ({placeholders})',
+            tuple(run_ids),
+        )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
 
 
 def load_runs(experiment: Experiment, component: str) -> pl.DataFrame:

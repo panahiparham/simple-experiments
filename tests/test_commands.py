@@ -268,6 +268,51 @@ def test_status_says_nothing_about_workers_when_finished(experiment, capsys):
     assert "num-workers" not in capsys.readouterr().out
 
 
+# --- delete -------------------------------------------------------------------
+
+
+def test_delete_previews_without_yes(experiment, capsys):
+    run(experiment, process, ["single", "--component", "b", "--seed", "0"])
+    capsys.readouterr()
+    run(experiment, refuse, ["delete", "--component", "b", "--seed", "0"])
+    assert "pass --yes" in capsys.readouterr().out
+    assert len(completed(experiment)["b"]) == 1
+
+
+def test_delete_with_yes_removes_the_run(experiment):
+    run(experiment, process, ["single", "--component", "b", "--seed", "0"])
+    run(experiment, refuse, ["delete", "--component", "b", "--seed", "0", "--yes"])
+    assert completed(experiment)["b"] == set()
+
+
+def test_delete_resolves_every_sweep_point_for_a_seed(experiment):
+    run(experiment, process, ["sweep", "--component", "a"])
+    run(experiment, refuse, ["delete", "--component", "a", "--seed", "0", "--yes"])
+    assert len(completed(experiment)["a"]) == 4
+
+
+def test_delete_by_run_id_bypasses_resolution(experiment):
+    run(experiment, process, ["single", "--component", "b", "--seed", "0"])
+    run_id = load_runs(experiment, "b")["run_id"][0]
+    run(experiment, refuse, ["delete", "--component", "b", "--run-id", run_id, "--yes"])
+    assert completed(experiment)["b"] == set()
+
+
+def test_delete_run_id_needs_a_component(experiment):
+    with pytest.raises(SystemExit, match="needs --component"):
+        run(experiment, refuse, ["delete", "--run-id", "whatever"])
+
+
+def test_delete_needs_component_and_seed_or_run_id(experiment):
+    with pytest.raises(SystemExit, match="needs --component and --seed"):
+        run(experiment, refuse, ["delete", "--component", "b"])
+
+
+def test_delete_with_no_matches_reports_none(experiment, capsys):
+    run(experiment, refuse, ["delete", "--component", "b", "--seed", "5"])
+    assert "no matching run" in capsys.readouterr().out
+
+
 # --- workers across processes -----------------------------------------------
 
 
