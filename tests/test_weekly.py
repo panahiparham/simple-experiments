@@ -24,6 +24,8 @@ from experiment.weekly import (
     Submit,
     TransientState,
     WeeklyBenchmarkConfig,
+    apply,
+    apply_error,
     decide,
 )
 
@@ -201,3 +203,80 @@ def test_failed_due_and_under_the_limit_retries(config):
     assert action == Submit("s1")
     assert new_state.phase == Phase.DISPATCHED
     assert new_state.dispatch_token is None
+
+
+# --- apply --------------------------------------------------------------
+
+
+def test_apply_sleep_is_a_no_op(config):
+    state = waiting()
+    new_state, history = apply(state, Sleep(), None, NOW, config)
+    assert (new_state, history) == (state, None)
+
+
+def test_apply_submit_stores_the_token(config):
+    state = waiting(phase=Phase.DISPATCHED, dispatch_sha="s1")
+    new_state, history = apply(state, Submit("s1"), "tok-1", NOW, config)
+    assert new_state.dispatch_token == "tok-1"
+    assert history is None
+
+
+def test_apply_submit_without_a_token_raises(config):
+    state = waiting(phase=Phase.DISPATCHED, dispatch_sha="s1")
+    with pytest.raises(ValueError, match="dispatch token"):
+        apply(state, Submit("s1"), None, NOW, config)
+
+
+def test_apply_finish_resets_to_waiting_and_records_history(config):
+    state = waiting(
+        phase=Phase.FINISHING, dispatch_sha="s1", dispatch_token="t1", attempt_count=2
+    )
+    new_state, history = apply(state, Finish("s1", "t1"), "pr-url", NOW, config)
+    assert new_state.phase == Phase.WAITING
+    assert new_state.next_wake_at == NOW + timedelta(days=7)
+    assert (new_state.dispatch_sha, new_state.dispatch_token) == (None, None)
+    assert new_state.last_publish_id == "pr-url"
+    assert new_state.attempt_count == 0
+    assert history == DurableHistory(last_completed_sha="s1", last_completed_at=NOW)
+
+
+def test_apply_finish_without_a_publish_id_raises(config):
+    state = waiting(phase=Phase.FINISHING, dispatch_sha="s1", dispatch_token="t1")
+    with pytest.raises(ValueError, match="publish id"):
+        apply(state, Finish("s1", "t1"), None, NOW, config)
+
+
+def test_apply_mark_failed_settles_in_failed(config):
+    state = waiting(phase=Phase.DISPATCHED, dispatch_sha="s1", attempt_count=1)
+    new_state, history = apply(state, MarkFailed("boom"), None, NOW, config)
+    assert new_state.phase == Phase.FAILED
+    assert new_state.attempt_count == 2
+    assert new_state.last_error == "boom"
+    assert history is None
+
+
+# --- apply_error --------------------------------------------------------
+
+
+def test_apply_error_on_submit_settles_in_failed():
+    state = waiting(phase=Phase.DISPATCHED, dispatch_sha="s1", attempt_count=0)
+    new_state = apply_error(state, Submit("s1"), "connection refused")
+    assert new_state.phase == Phase.FAILED
+    assert new_state.attempt_count == 1
+    assert new_state.last_error == "connection refused"
+
+
+def test_apply_error_on_finish_settles_in_failed():
+    state = waiting(
+        phase=Phase.FINISHING, dispatch_sha="s1", dispatch_token="t1", attempt_count=1
+    )
+    new_state = apply_error(state, Finish("s1", "t1"), "gh: rate limited")
+    assert new_state.phase == Phase.FAILED
+    assert new_state.attempt_count == 2
+
+
+@pytest.mark.parametrize("action", [Sleep(), MarkFailed("boom")])
+def test_apply_error_rejects_actions_with_no_side_effect(action):
+    state = waiting()
+    with pytest.raises(ValueError, match="no side effect"):
+        apply_error(state, action, "should never happen")
