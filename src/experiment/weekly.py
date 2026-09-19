@@ -353,3 +353,28 @@ def _decide_waiting(
         last_error=None,
     )
     return dispatching, Submit(facts.remote_sha)
+
+
+def _decide_dispatched(
+    state: TransientState, facts: Facts, config: WeeklyBenchmarkConfig
+) -> tuple[TransientState, Action]:
+    """``decide``'s ``DISPATCHED`` branch: poll, resubmit, or finish."""
+    if state.dispatch_sha is None:
+        raise ValueError("DISPATCHED state has no dispatch_sha")
+
+    if state.dispatch_token is None or facts.job_status is None:
+        # The token was never persisted (a crash between Submit's side
+        # effect and apply()) or this tick didn't poll - resubmit.
+        # Dispatcher.submit's own dedup makes this safe against a job
+        # that's already running or already finished.
+        return state, Submit(state.dispatch_sha)
+
+    if facts.job_status is JobStatus.RUNNING:
+        next_wake_at = config.poll_interval(facts.now)
+        return dataclasses.replace(state, next_wake_at=next_wake_at), Sleep()
+
+    if facts.job_status is JobStatus.SUCCEEDED:
+        finishing = dataclasses.replace(state, phase=Phase.FINISHING)
+        return finishing, Finish(state.dispatch_sha, state.dispatch_token)
+
+    return state, MarkFailed(f"job for {state.dispatch_sha} failed")
