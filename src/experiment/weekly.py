@@ -10,7 +10,7 @@ consecutive ticks run in the same process, or even on the same host.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from datetime import datetime
 from enum import StrEnum
@@ -20,16 +20,22 @@ from typing import Protocol
 from experiment.design import Experiment
 
 __all__ = [
+    "Action",
     "Dispatcher",
     "DurableHistory",
+    "Finish",
     "HistoryStore",
     "JobStatus",
     "Lock",
+    "MarkFailed",
     "Phase",
     "Publisher",
     "Reporter",
+    "Sleep",
+    "Submit",
     "TransientState",
     "TransientStore",
+    "WeeklyBenchmarkConfig",
 ]
 
 
@@ -232,3 +238,74 @@ class Lock(Protocol):
             ``None`` if another tick currently holds it, in which case the
             caller must do no work this tick.
         """
+
+
+@dataclasses.dataclass(frozen=True)
+class Sleep:
+    """Nothing to do; only ``next_wake_at`` needs persisting."""
+
+
+@dataclasses.dataclass(frozen=True)
+class Submit:
+    """Submit ``sha`` to the :class:`Dispatcher`."""
+
+    sha: str
+
+
+@dataclasses.dataclass(frozen=True)
+class Finish:
+    """Render and publish ``sha``'s results."""
+
+    sha: str
+    dispatch_token: str
+
+
+@dataclasses.dataclass(frozen=True)
+class MarkFailed:
+    """Settle in :attr:`Phase.FAILED` with ``reason`` recorded."""
+
+    reason: str
+
+
+Action = Sleep | Submit | Finish | MarkFailed
+
+
+@dataclasses.dataclass(frozen=True)
+class WeeklyBenchmarkConfig:
+    """Wires a generic scheduler up to one concrete deployment.
+
+    Attributes:
+        label: Identifies this suite, for job names and file paths.
+        experiment: The experiment being benchmarked.
+        remote_sha: Returns the commit that should be benchmarked next,
+            e.g. the tip of a tracked branch.
+        next_scheduled_wake: Given a completion time, returns the next
+            calendar-anchored wake time (e.g. "next Sunday 00:00 UTC").
+            A fixed calendar anchor is used rather than a duration so the
+            schedule doesn't drift later every cycle a run overruns.
+        poll_interval: Given now, returns when to next check a dispatched
+            job.
+        dispatcher: Submits and polls benchmark runs.
+        reporter: Renders a completed run's results.
+        publisher: Publishes rendered results.
+        transient_store: Reads and writes runtime scheduling state.
+        history_store: Reads and writes durable completion history.
+        lock: Coordinates against overlapping ticks.
+        out_dir: Where the reporter should write rendered artifacts.
+        max_attempts: Consecutive failures for one sha before giving up
+            and settling in ``FAILED`` instead of retrying every tick.
+    """
+
+    label: str
+    experiment: Experiment
+    remote_sha: Callable[[], str]
+    next_scheduled_wake: Callable[[datetime], datetime]
+    poll_interval: Callable[[datetime], datetime]
+    dispatcher: Dispatcher
+    reporter: Reporter
+    publisher: Publisher
+    transient_store: TransientStore
+    history_store: HistoryStore
+    lock: Lock
+    out_dir: Path
+    max_attempts: int = 3
