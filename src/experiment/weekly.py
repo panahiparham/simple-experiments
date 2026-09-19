@@ -37,6 +37,8 @@ __all__ = [
     "TransientState",
     "TransientStore",
     "WeeklyBenchmarkConfig",
+    "apply",
+    "apply_error",
     "decide",
 ]
 
@@ -445,3 +447,72 @@ def decide(
     if state.phase is Phase.FINISHING:
         return _decide_finishing(state)
     return _decide_failed(state, facts, config)
+
+
+def apply(
+    state: TransientState,
+    action: Action,
+    result: str | None,
+    now: datetime,
+    config: WeeklyBenchmarkConfig,
+) -> tuple[TransientState, DurableHistory | None]:
+    """Fold a *successful* action's result into state.
+
+    ``result`` is the ``Dispatcher.submit`` token for ``Submit``, the
+    ``Publisher.publish`` identifier for ``Finish``, and unused for
+    ``Sleep``/``MarkFailed``. Returns the updated ``TransientState``
+    always, and a ``DurableHistory`` update only for ``Finish`` - the only
+    transition that advances ``last_completed_sha``/``last_completed_at``.
+    """
+    if isinstance(action, Sleep):
+        return state, None
+
+    if isinstance(action, Submit):
+        if result is None:
+            raise ValueError("Submit requires a dispatch token")
+        return dataclasses.replace(state, dispatch_token=result), None
+
+    if isinstance(action, Finish):
+        if result is None:
+            raise ValueError("Finish requires a publish id")
+        completed = dataclasses.replace(
+            state,
+            phase=Phase.WAITING,
+            next_wake_at=config.next_scheduled_wake(now),
+            dispatch_sha=None,
+            dispatch_token=None,
+            last_publish_id=result,
+            attempt_count=0,
+            last_error=None,
+        )
+        history = DurableHistory(last_completed_sha=action.sha, last_completed_at=now)
+        return completed, history
+
+    failed = dataclasses.replace(
+        state,
+        phase=Phase.FAILED,
+        attempt_count=state.attempt_count + 1,
+        last_error=action.reason,
+    )
+    return failed, None
+
+
+def apply_error(state: TransientState, action: Action, error: str) -> TransientState:
+    """Fold a *failed* action's side effect into state.
+
+    Settles in ``Phase.FAILED`` with ``attempt_count`` incremented and
+    ``last_error`` recorded, regardless of whether ``action`` was
+    ``Submit`` or ``Finish``: this is what closes the "action raised,
+    pre-action state left on disk forever" gap - the next tick sees
+    ``FAILED`` and ``decide`` (via ``_decide_failed``) determines whether
+    to retry, rather than the same exception recurring against a state
+    that never changed.
+    """
+    if isinstance(action, Sleep | MarkFailed):
+        raise ValueError(f"{action} has no side effect that can fail")
+    return dataclasses.replace(
+        state,
+        phase=Phase.FAILED,
+        attempt_count=state.attempt_count + 1,
+        last_error=error,
+    )
