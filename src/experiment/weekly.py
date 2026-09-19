@@ -40,6 +40,7 @@ __all__ = [
     "apply",
     "apply_error",
     "decide",
+    "tick",
 ]
 
 
@@ -516,3 +517,65 @@ def apply_error(state: TransientState, action: Action, error: str) -> TransientS
         attempt_count=state.attempt_count + 1,
         last_error=error,
     )
+
+
+def _perform(action: Action, config: WeeklyBenchmarkConfig) -> str | None:
+    """Run an action's side effect, returning what `apply` needs to fold in."""
+    if isinstance(action, Submit):
+        return config.dispatcher.submit(action.sha)
+    if isinstance(action, Finish):
+        artifacts = config.reporter(action.sha, config.experiment, config.out_dir)
+        return config.publisher.publish(action.sha, artifacts)
+    return None
+
+
+def tick(config: WeeklyBenchmarkConfig, now: datetime) -> TransientState:
+    """Single stateless invocation: load, decide, act, persist.
+
+    Acquires ``config.lock`` first and does nothing if another tick holds
+    it - what makes a cheap, frequent external trigger cadence safe
+    against a slow-running tick overlapping the next one. Persists the
+    pre-action state *before* performing the action's side effect, so a
+    crash mid-action leaves a recoverable state rather than one that
+    looks like nothing happened.
+    """
+    held = config.lock.try_acquire()
+    if held is None:
+        return config.transient_store.load() or TransientState.initial(now)
+
+    with held:
+        state = config.transient_store.load() or TransientState.initial(now)
+        idle = state.phase in (Phase.WAITING, Phase.FAILED)
+        if idle and now < state.next_wake_at:
+            return state
+
+        job_status = None
+        if state.phase is Phase.DISPATCHED and state.dispatch_token is not None:
+            job_status = config.dispatcher.poll(state.dispatch_token)
+        history = config.history_store.load() or DurableHistory(None, None)
+        observed = Facts(
+            now=now,
+            remote_sha=config.remote_sha(),
+            job_status=job_status,
+            history=history,
+        )
+
+        pre_action_state, action = decide(state, observed, config)
+        config.transient_store.save(pre_action_state)
+        if isinstance(action, Sleep):
+            return pre_action_state
+
+        try:
+            result = _perform(action, config)
+        except Exception as exc:
+            failed_state = apply_error(pre_action_state, action, str(exc))
+            config.transient_store.save(failed_state)
+            return failed_state
+
+        final_state, history_update = apply(
+            pre_action_state, action, result, now, config
+        )
+        config.transient_store.save(final_state)
+        if history_update is not None:
+            config.history_store.save(history_update)
+        return final_state
