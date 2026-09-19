@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -21,11 +22,14 @@ from experiment.design import Experiment
 __all__ = [
     "Dispatcher",
     "DurableHistory",
+    "HistoryStore",
     "JobStatus",
+    "Lock",
     "Phase",
     "Publisher",
     "Reporter",
     "TransientState",
+    "TransientStore",
 ]
 
 
@@ -184,4 +188,47 @@ class Publisher(Protocol):
 
         Returns:
             An identifier for the publication (e.g. a PR URL).
+        """
+
+
+class TransientStore(Protocol):
+    """Reads and writes a suite's runtime scheduling state."""
+
+    def load(self) -> TransientState | None:
+        """Return the stored state, or ``None`` if none has been saved yet."""
+
+    def save(self, state: TransientState) -> None:
+        """Persist ``state`` atomically.
+
+        A partial write (e.g. a crash mid-write) must never leave a file
+        that fails to parse on the next :meth:`load`. Must write to a path
+        outside of git tracking.
+        """
+
+
+class HistoryStore(Protocol):
+    """Reads and writes a suite's durable completion history."""
+
+    def load(self) -> DurableHistory | None:
+        """Return the stored history, or ``None`` if none exists yet."""
+
+    def save(self, history: DurableHistory) -> None:
+        """Persist ``history``.
+
+        Safe for a concrete implementation to commit to git: this is only
+        ever called after a successful finish, never mid-dispatch.
+        """
+
+
+class Lock(Protocol):
+    """Coordinates against overlapping ticks."""
+
+    def try_acquire(self) -> AbstractContextManager[None] | None:
+        """Attempt to acquire, without blocking.
+
+        Returns:
+            An already-acquired context manager on success, whose
+            ``__enter__`` is a no-op and ``__exit__`` releases it; or
+            ``None`` if another tick currently holds it, in which case the
+            caller must do no work this tick.
         """
