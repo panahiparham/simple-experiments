@@ -426,10 +426,21 @@ def _split_cluster_flags(argv: list[str]) -> tuple[list[str], _Cluster]:
 
 
 def _sync(experiment: Experiment, cluster: _Cluster, argv: list[str]) -> None:
-    """Bring the cluster's results home and merge them into the local store."""
-    argparse.ArgumentParser(prog="run.py sync").parse_args(argv)
+    """Sync results with the cluster, or with ``--push`` send them there."""
+    parser = argparse.ArgumentParser(prog="run.py sync")
+    parser.add_argument(
+        "--push",
+        action="store_true",
+        help="send the local database to the cluster instead of fetching",
+    )
+    args = parser.parse_args(argv)
 
     from experiment import slurm
+
+    if args.push:
+        slurm.push(experiment, config_path=cluster.config)
+        print(f"[{experiment.name}] pushed local results to the cluster")
+        return
 
     slurm.fetch(experiment, config_path=cluster.config)
     print(f"[{experiment.name}] merged {merge_parts(experiment)} run(s)")

@@ -96,6 +96,7 @@ run.py sweep --num-workers 6         # across 6 local worker processes
 run.py sweep --num-workers 6 --slurm # the same work as a SLURM array
 run.py single --component tuned --seed 0
 run.py sync                          # bring the cluster's results home
+run.py sync --push                   # send local-only results there instead
 run.py queue | logs                  # cluster only
 ```
 
