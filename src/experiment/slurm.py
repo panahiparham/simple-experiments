@@ -64,6 +64,7 @@ __all__ = [
     "venv_name",
     "dispatch",
     "fetch",
+    "push",
     "wipe",
     "is_queued",
     "status",
@@ -657,6 +658,36 @@ def fetch(experiment, *, config_path: str | Path | None = None) -> int:
     if not found:
         raise SystemExit(f"[{experiment.name}] no results at {remote} yet")
     return found
+
+
+def push(experiment, *, config_path: str | Path | None = None) -> None:
+    """Copy the local database up as one more part beside the cluster's own.
+
+    Landing it as a part, not as the cluster's merged database, means nothing
+    there is ever overwritten: the cluster's own merge picks it up next, and
+    until then its ids already count as done, so a sweep dispatched afterwards
+    skips every run this covers instead of recomputing it.
+
+    Args:
+        experiment: The experiment to push.
+        config_path: The ``cluster.toml`` to read, defaulting to the repo root's.
+
+    Raises:
+        SystemExit: If there is no local database yet, or rsync fails.
+    """
+    cfg = load_config(config_path)
+    local = experiment.results_dir / f"{experiment.name}.db"
+    if not local.exists():
+        raise SystemExit(f"[{experiment.name}] no local database at {local}")
+
+    remote = f"{_remote_root(cfg)}/results/{experiment.name}"
+    remote_parts = f"{remote}/{experiment.name}.parts"
+    _ssh(cfg, f"mkdir -p {shlex.quote(remote_parts)}")
+    dest = f"{remote_parts}/part-local.db"
+    proc = _run(["rsync", "-az", str(local), _remote_path(cfg, dest)])
+    _check_auth(cfg, proc.stderr)
+    if proc.returncode != 0:
+        raise SystemExit(f"rsync to {dest} failed\n{proc.stderr.strip()}")
 
 
 def wipe(*, label: str, config_path: str | Path | None = None) -> None:
