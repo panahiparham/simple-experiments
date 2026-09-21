@@ -188,6 +188,52 @@ An earlier layout kept one database per component. `run.py migrate` folds
 those into the experiment's database. Run ids are unchanged, so migrated
 runs still count as done. The old files are left in place.
 
+## Scheduling a weekly benchmark
+
+`experiment.weekly` is a stateless scheduler for a benchmark that should run
+on a recurring cadence: check whether a run is due, dispatch it to a compute
+backend, wait for it, then publish its results. It has no dependency on any
+particular cluster, results store, or publishing tool - you supply those by
+implementing its `Dispatcher`, `Reporter`, `Publisher`, `TransientStore` and
+`HistoryStore` protocols.
+
+`tick()` is the only entry point a caller needs: invoke it on an external
+cadence (a cron entry, a systemd timer) and it does one unit of work before
+returning - checking due-ness, dispatching, polling, or publishing. Runtime
+scheduling state and durable completion history are read and persisted
+separately, and are always saved before their paired action's side effect
+runs, so a crash or a reboot between ticks is recoverable without risking a
+duplicate dispatch or publish:
+
+```python
+# weekly.py
+from datetime import UTC, datetime
+
+from experiment.weekly import WeeklyBenchmarkConfig, tick
+
+config = WeeklyBenchmarkConfig(
+    label="bench_core",
+    experiment=EXPERIMENT,
+    remote_sha=my_remote_sha,
+    next_scheduled_wake=lambda now: now + timedelta(days=7),
+    poll_interval=lambda now: now + timedelta(minutes=20),
+    dispatcher=MyDispatcher(),
+    reporter=my_reporter,
+    publisher=MyPublisher(),
+    transient_store=MyTransientStore(),
+    history_store=MyHistoryStore(),
+    lock=MyLock(),
+    out_dir=Path("plots"),
+)
+
+if __name__ == "__main__":
+    tick(config, datetime.now(UTC))
+```
+
+A `Dispatcher.submit`/`Publisher.publish` implementation must itself be
+idempotent, deduplicating on the commit sha it was called with - the
+scheduler does not track job or publish identity beyond that.
+
 ## Modules
 
 | Module | Holds |
@@ -201,6 +247,7 @@ runs still count as done. The old files are left in place.
 | `experiment.commands` | `run`, the CLI every `run.py` shares |
 | `experiment.slurm` | cluster dispatch, fetch, queue, logs, and `setup` |
 | `experiment.legacy` | one-shot migration from the per-component store |
+| `experiment.weekly` | stateless scheduler for a recurring benchmark run |
 
 ## Tests
 
