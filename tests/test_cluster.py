@@ -540,6 +540,51 @@ def test_fetch_from_an_empty_results_dir_is_refused(cluster, tmp_path):
         slurm.fetch(experiment_at(tmp_path / "local"))
 
 
+def test_push_lands_the_local_database_as_a_part(cluster, tmp_path):
+    root = cluster()
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "toy.db").write_text("local results")
+
+    slurm.push(experiment_at(local))
+
+    pushed = root / "results" / "toy" / "toy.parts" / "part-local.db"
+    assert pushed.read_text() == "local results"
+
+
+def test_push_without_a_local_database_is_refused(cluster, tmp_path):
+    cluster()
+
+    with pytest.raises(SystemExit, match="no local database"):
+        slurm.push(experiment_at(tmp_path / "local"))
+
+
+def test_push_compresses_the_transfer(cluster, tmp_path, rsync_calls):
+    cluster()
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "toy.db").write_text("local results")
+
+    slurm.push(experiment_at(local))
+
+    [argv] = rsync_calls
+    assert "z" in argv[1], f"rsync ran as {argv}"
+
+
+def test_a_push_then_fetch_brings_back_the_same_rows(cluster, tmp_path):
+    cluster()
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "toy.db").write_text("local results")
+
+    slurm.push(experiment_at(local))
+    (local / "toy.db").unlink()
+    slurm.fetch(experiment_at(local))
+
+    parts = [p.read_text() for p in (local / "toy.parts").glob("part-*.db")]
+    assert parts == ["local results"]
+
+
 @pytest.mark.parametrize(
     "call",
     [slurm.status, slurm.logs, slurm.is_queued],
