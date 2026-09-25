@@ -283,6 +283,16 @@ def test_status_reports_the_useful_worker_count(experiment, capsys):
     assert "--num-workers 8" in capsys.readouterr().out
 
 
+def test_status_counts_workers_by_the_shards_each_runs_at_once(
+    experiment, capsys
+):
+    run(
+        experiment, refuse,
+        ["status", "--shard-size", "1", "--parallel-shards", "4"],
+    )
+    assert "--num-workers 3" in capsys.readouterr().out
+
+
 def test_status_says_nothing_about_workers_when_finished(experiment, capsys):
     run(experiment, process, ["sweep"])
     capsys.readouterr()

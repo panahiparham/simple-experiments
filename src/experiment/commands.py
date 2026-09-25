@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import math
 import pickle
 import subprocess
 import sys
@@ -390,13 +391,14 @@ def _status(experiment: Experiment, argv: list[str]) -> None:
     """
     parser = argparse.ArgumentParser(prog="run.py status")
     parser.add_argument("--shard-size", type=int, default=None)
+    parser.add_argument("--parallel-shards", type=_at_least_one, default=None)
     parser.add_argument("--component", nargs="+", default=None)
     _add_override_flag(parser)
     args = parser.parse_args(argv)
 
     overrides = parse_overrides(args.overrides)
     stored = completed(experiment)
-    total_runs = total_done = total_shards = 0
+    total_runs = total_done = total_shards = useful_workers = 0
     for component in _select(experiment, args.component):
         runs = component_runs(component, overrides)
         done = stored.get(component.name, set())
@@ -410,6 +412,12 @@ def _status(experiment: Experiment, argv: list[str]) -> None:
         total_runs += len(runs)
         total_done += len(runs) - len(pending)
         total_shards += len(shards)
+        parallel = (
+            args.parallel_shards
+            if args.parallel_shards is not None
+            else component.parallel_shards
+        )
+        useful_workers += math.ceil(len(shards) / parallel)
         print(
             f"[{component.name}] {len(runs)} run(s): "
             f"{len(runs) - len(pending)} done, {len(pending)} pending "
@@ -421,7 +429,9 @@ def _status(experiment: Experiment, argv: list[str]) -> None:
         f"{total_runs - total_done} pending"
     )
     if total_shards:
-        summary += f" in {total_shards} shard(s) -> up to --num-workers {total_shards}"
+        summary += (
+            f" in {total_shards} shard(s) -> up to --num-workers {useful_workers}"
+        )
     print(summary)
 
 
