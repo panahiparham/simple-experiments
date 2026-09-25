@@ -207,6 +207,23 @@ def test_the_plan_step_covers_every_run(experiment, tmp_path):
     assert sum(len(shard) for share in shares for shard in shards_of(share)) == 8
 
 
+def test_the_plan_step_gives_each_worker_one_slot_per_component(
+    experiment, tmp_path
+):
+    shares = plan_file(experiment, tmp_path, 1)
+    assert [len(phase.slots) for phase in shares[0]] == [1, 1]
+
+
+def test_parallel_shards_sets_every_components_slots(experiment, tmp_path):
+    shares = plan_file(experiment, tmp_path, 1, "--parallel-shards", "2")
+    assert [len(phase.slots) for phase in shares[0]] == [2, 2]
+
+
+def test_parallel_shards_below_one_is_refused(experiment, tmp_path):
+    with pytest.raises(SystemExit):
+        plan_file(experiment, tmp_path, 1, "--parallel-shards", "0")
+
+
 def test_a_worker_runs_only_its_own_share(experiment, tmp_path):
     shares = plan_file(experiment, tmp_path, 3)
     path = tmp_path / "plan.pickle"
