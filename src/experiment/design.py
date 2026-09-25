@@ -50,7 +50,8 @@ class Component:
     The runs a component defines are every point of its ``sweep`` applied to
     ``config``, crossed with every seed. ``shard_size`` is how many of those runs
     are packed into one shard; ``None`` packs each group of runs that can be
-    batched together into a single shard.
+    batched together into a single shard. ``parallel_shards`` is how many of the
+    component's shards one worker runs at the same time, each in its own process.
 
     Attributes:
         name: Identifies the component, and names its table in the experiment's
@@ -61,6 +62,7 @@ class Component:
         seeds: The seeds every swept config is run at.
         shard_size: How many runs to pack into a shard, or ``None`` for as many
             as can be batched together.
+        parallel_shards: How many shards a worker runs at once.
     """
 
     name: str
@@ -68,6 +70,7 @@ class Component:
     sweep: dict[str, list] = dataclasses.field(default_factory=dict)
     seeds: Sequence[int] = ()
     shard_size: int | None = None
+    parallel_shards: int = 1
 
     def __post_init__(self) -> None:
         _require_identifier(self.name, "component")
@@ -77,6 +80,11 @@ class Component:
             raise ValueError(
                 f"component {self.name!r} has shard_size={self.shard_size}; "
                 "it must be at least 1, or None"
+            )
+        if self.parallel_shards < 1:
+            raise ValueError(
+                f"component {self.name!r} has parallel_shards="
+                f"{self.parallel_shards}; it must be at least 1"
             )
 
 
