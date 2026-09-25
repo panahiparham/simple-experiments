@@ -62,7 +62,7 @@ def run_everything(experiment: Experiment, num_workers: int = 1) -> None:
     """Compute and store every outstanding run, as a sweep would."""
     plan = plan_experiment(experiment, done=completed(experiment))
     for worker in range(num_workers):
-        with ResultWriter(experiment, worker) as writer:
+        with ResultWriter(experiment, str(worker)) as writer:
             for shard in plan[worker::num_workers]:
                 writer.save(shard, [result(r.seed) for r in shard.runs])
 
@@ -75,7 +75,7 @@ def test_the_database_is_named_after_the_experiment(experiment):
 
 
 def test_parts_sit_beside_the_database(experiment):
-    assert _part_path(experiment, 0).parent == _parts_dir(experiment)
+    assert _part_path(experiment, "0").parent == _parts_dir(experiment)
     assert _parts_dir(experiment).parent == experiment.results_dir
 
 
@@ -87,7 +87,7 @@ def test_an_empty_store_has_completed_nothing(experiment):
 
 
 def test_a_worker_with_no_work_writes_no_file(experiment):
-    writer = ResultWriter(experiment, 0)
+    writer = ResultWriter(experiment, "0")
     writer.close()
     assert not writer.path.exists()
 
@@ -110,7 +110,7 @@ def test_a_finished_experiment_plans_no_more_work(experiment):
 
 def test_saving_a_run_twice_stores_it_once(experiment):
     plan = plan_experiment(experiment)
-    with ResultWriter(experiment, 0) as writer:
+    with ResultWriter(experiment, "0") as writer:
         first = writer.save(plan[0], [result(r.seed) for r in plan[0].runs])
         again = writer.save(plan[0], [result(r.seed) for r in plan[0].runs])
     assert (first, again) == (len(plan[0].runs), 0)
@@ -118,14 +118,14 @@ def test_saving_a_run_twice_stores_it_once(experiment):
 
 def test_a_result_per_run_is_required(experiment):
     shard = plan_experiment(experiment)[0]
-    with ResultWriter(experiment, 0) as writer:
+    with ResultWriter(experiment, "0") as writer:
         with pytest.raises(ValueError, match="result"):
             writer.save(shard, [])
 
 
 def test_a_run_may_produce_nothing(experiment):
     shard = plan_experiment(experiment)[0]
-    with ResultWriter(experiment, 0) as writer:
+    with ResultWriter(experiment, "0") as writer:
         writer.save(shard, [{} for _ in shard.runs])
     run = shard.runs[0]
     assert load_result(experiment, shard.component, run.id) == {}
@@ -135,7 +135,7 @@ def test_a_run_may_produce_nothing(experiment):
 def test_a_redundant_result_is_stored_compressed(experiment):
     shard = plan_experiment(experiment)[0]
     arrays = {"reward": np.ones(100_000, dtype=np.float32)}
-    with ResultWriter(experiment, 0) as writer:
+    with ResultWriter(experiment, "0") as writer:
         writer.save(shard, [arrays for _ in shard.runs])
     stored = _query_ro(
         writer.path,
@@ -174,7 +174,7 @@ def test_merging_nothing_is_a_no_op(experiment):
 
 def test_a_worker_that_touched_one_component_merges_cleanly(experiment):
     plan = [s for s in plan_experiment(experiment) if s.component == "b"]
-    with ResultWriter(experiment, 0) as writer:
+    with ResultWriter(experiment, "0") as writer:
         for shard in plan:
             writer.save(shard, [result(r.seed) for r in shard.runs])
     assert merge_parts(experiment) == 2

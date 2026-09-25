@@ -262,7 +262,7 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
         if args.worker_index is None:
             raise SystemExit("--plan needs --worker-index")
         mine = _shards(pickle.loads(Path(args.plan).read_bytes())[args.worker_index])
-        saved = run_shards(experiment, mine, process, worker=args.worker_index)
+        saved = run_shards(experiment, mine, process, part=str(args.worker_index))
         print(
             f"[{experiment.name}] worker {args.worker_index} stored "
             f"{saved} run(s) from {len(mine)} shard(s)"
