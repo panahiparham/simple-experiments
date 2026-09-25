@@ -361,6 +361,16 @@ def _utc() -> str:
 # it per array task.
 _TASK_ID = "$SLURM_ARRAY_TASK_ID"
 
+# Lets the processes a GPU job starts share its GPU through one MPS server, so
+# their kernels overlap instead of taking turns. The directories are per job
+# because jobs on one node may share /tmp. The server is never told to quit,
+# since that waits for every client to exit; Slurm stops it with the job.
+_START_MPS = (
+    'export CUDA_MPS_PIPE_DIRECTORY="${SLURM_TMPDIR:-/tmp}/mps-$SLURM_JOB_ID" '
+    'CUDA_MPS_LOG_DIRECTORY="${SLURM_TMPDIR:-/tmp}/mps-log-$SLURM_JOB_ID" && '
+    "nvidia-cuda-mps-control -d && "
+)
+
 
 def _job_command(
     rundir: str, run_py_rel: str, venv: str, mode: str, argv: list[str],
@@ -527,6 +537,8 @@ def dispatch(
     if not venv_path:
         raise SystemExit("build_env.sh did not report a venv")
 
+    uses_mps = bool(resources.get("mps")) and int(resources.get("gpus", 0)) > 0
+    start_mps = _START_MPS if uses_mps else ""
     if mode == "sweep":
         workers, rest = _num_workers(argv)
         plan_file = f"{rundir}/plan.pickle"
@@ -554,9 +566,10 @@ def dispatch(
             f"--array=0-{workers - 1}",
             "--job-name=sweep",
             f"--output={rundir}/logs/sweep-%A_%a.out",
-            wrap=_job_command(rundir, run_py_rel, venv_path, "sweep",
-                              ["--plan", plan_file, "--worker-index", _TASK_ID],
-                              cfg.src_dirs),
+            wrap=start_mps + _job_command(
+                rundir, run_py_rel, venv_path, "sweep",
+                ["--plan", plan_file, "--worker-index", _TASK_ID], cfg.src_dirs,
+            ),
         ), dry_run=dry_run)
         merge = _submit(cfg, _sbatch_argv(
             cfg, cheap,
@@ -572,8 +585,9 @@ def dispatch(
             cfg, resources,
             "--job-name=single",
             f"--output={rundir}/logs/single-%j.out",
-            wrap=_job_command(rundir, run_py_rel, venv_path, "single", argv,
-                              cfg.src_dirs),
+            wrap=start_mps + _job_command(
+                rundir, run_py_rel, venv_path, "single", argv, cfg.src_dirs
+            ),
         ), dry_run=dry_run)}
 
     if dry_run:

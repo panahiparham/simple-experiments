@@ -53,13 +53,14 @@ def commit_file(repo: Path, name: str, body: str) -> str:
 
 @pytest.fixture
 def cluster(repo, monkeypatch):
-    def build(*, gpus: int = 0) -> Path:
+    def build(*, gpus: int = 0, mps: bool = False) -> Path:
         root = repo.parent / "cluster"
         write_config(
             repo,
             f'[cluster]\nhost = "cedar"\nroot = "{root}"\naccount = "def-a"\n'
             '\n[project]\nname = "toy"\nsrc_dirs = ["src"]\n'
             f'\n[slurm]\ntime = "0:10:00"\ncpus_per_task = 2\ngpus = {gpus}\n'
+            f"mps = {str(mps).lower()}\n"
             '\n[venvs]\ncpu = []\ngpu = []\n',
         )
         (repo / "src").mkdir()
@@ -114,6 +115,14 @@ def jobs_asking_for_a_gpu(out: str) -> list[str]:
         line.split("--job-name=", 1)[1].split(" ", 1)[0]
         for line in out.strip().splitlines()
         if "--gpus-per-node=" in line
+    ]
+
+
+def jobs_starting_mps(out: str) -> list[str]:
+    return [
+        line.split("--job-name=", 1)[1].split(" ", 1)[0]
+        for line in out.strip().splitlines()
+        if "nvidia-cuda-mps-control -d" in line
     ]
 
 
@@ -463,6 +472,48 @@ def test_a_gpu_job_runs_the_gpu_venvs_python(cluster, repo, capsys):
     dispatch_single(repo)
 
     assert f"{root}/envs/gpu/.venv/bin/python" in capsys.readouterr().out
+
+
+def test_an_mps_sweep_starts_the_server_only_in_its_array_job(
+    cluster, repo, capsys
+):
+    cluster(gpus=1, mps=True)
+
+    dispatch_sweep(repo, 2)
+
+    assert jobs_starting_mps(capsys.readouterr().out) == ["sweep"]
+
+
+def test_an_mps_single_job_starts_the_server(cluster, repo, capsys):
+    cluster(gpus=1, mps=True)
+
+    dispatch_single(repo)
+
+    assert jobs_starting_mps(capsys.readouterr().out) == ["single"]
+
+
+def test_each_mps_job_gets_its_own_server_directory(cluster, repo, capsys):
+    cluster(gpus=1, mps=True)
+
+    dispatch_single(repo)
+
+    assert "mps-$SLURM_JOB_ID" in capsys.readouterr().out
+
+
+def test_a_gpu_job_without_mps_starts_no_server(cluster, repo, capsys):
+    cluster(gpus=1)
+
+    dispatch_sweep(repo, 2)
+
+    assert jobs_starting_mps(capsys.readouterr().out) == []
+
+
+def test_mps_without_a_gpu_starts_no_server(cluster, repo, capsys):
+    cluster(mps=True)
+
+    dispatch_sweep(repo, 2)
+
+    assert jobs_starting_mps(capsys.readouterr().out) == []
 
 
 def test_fetch_brings_the_clusters_database_home(cluster, tmp_path):
