@@ -14,7 +14,9 @@ from experiment.design import Component, Experiment
 from experiment.hypers import traced
 from experiment.identity import config_id
 from experiment.plan import (
+    Phase,
     assign_shards,
+    assign_slots,
     batch_key,
     component_runs,
     expand_sweep,
@@ -258,3 +260,88 @@ def test_worker_loads_differ_by_at_most_one_shard(num_workers):
 def test_a_worker_pool_needs_at_least_one_worker():
     with pytest.raises(ValueError, match="at least 1"):
         assign_shards([], 0)
+
+
+# --- slot assignment --------------------------------------------------------
+
+
+def slotted(**parallel: int) -> Experiment:
+    a = component(name="a", sweep={"HYPERS.LR": [1e-3, 5e-4]}, shard_size=1)
+    b = component(name="b", seeds=[0, 1, 2], shard_size=1)
+    return experiment(
+        components=[
+            dataclasses.replace(c, parallel_shards=parallel.get(c.name, 1))
+            for c in (a, b)
+        ]
+    )
+
+
+def layout(workers: list[list[Phase]]) -> list[list[tuple[str, list[int]]]]:
+    return [
+        [(phase.component, [len(slot) for slot in phase.slots]) for phase in phases]
+        for phases in workers
+    ]
+
+
+@pytest.mark.parametrize("num_workers", [1, 2, 3, 8])
+@pytest.mark.parametrize("parallel", [1, 2, 3])
+def test_slots_cover_the_plan_exactly_once(num_workers, parallel):
+    exp = slotted(a=parallel, b=parallel)
+    shards = plan_experiment(exp)
+    workers = assign_slots(exp, shards, num_workers)
+    flat = [
+        shard
+        for phases in workers
+        for phase in phases
+        for slot in phase.slots
+        for shard in slot
+    ]
+    assert len(workers) == num_workers
+    assert sorted(map(id, flat)) == sorted(map(id, shards))
+
+
+@pytest.mark.parametrize("num_workers", [1, 2, 3, 8])
+def test_one_slot_per_component_deals_shards_in_turn(num_workers):
+    exp = slotted()
+    shards = plan_experiment(exp)
+    workers = assign_slots(exp, shards, num_workers)
+    for index, phases in enumerate(workers):
+        mine = [shard for phase in phases for shard in phase.slots[0]]
+        assert mine == shards[index::num_workers]
+
+
+def test_a_worker_fills_its_slots_before_the_next_worker_gets_any():
+    exp = slotted(a=2)
+    workers = assign_slots(exp, plan_experiment(exp), 2)
+    assert layout(workers) == [
+        [("a", [1, 1]), ("b", [2])],
+        [("a", [1, 1]), ("b", [1])],
+    ]
+
+
+def test_each_component_gets_its_own_number_of_slots():
+    exp = slotted(a=2)
+    workers = assign_slots(exp, plan_experiment(exp), 1)
+    assert layout(workers) == [[("a", [2, 2]), ("b", [3])]]
+
+
+def test_parallel_shards_overrides_every_component():
+    exp = slotted(a=2)
+    workers = assign_slots(exp, plan_experiment(exp), 1, parallel_shards=3)
+    assert layout(workers) == [[("a", [2, 1, 1]), ("b", [1, 1, 1])]]
+
+
+def test_a_worker_gets_no_more_slots_than_shards():
+    exp = slotted(b=8)
+    workers = assign_slots(exp, plan_experiment(exp), 1)
+    assert layout(workers) == [[("a", [4]), ("b", [1, 1, 1])]]
+
+
+def test_a_worker_with_nothing_to_do_gets_no_phases():
+    exp = slotted()
+    assert assign_slots(exp, plan_experiment(exp), 8)[7] == []
+
+
+def test_a_slotted_pool_needs_at_least_one_worker():
+    with pytest.raises(ValueError, match="at least 1"):
+        assign_slots(slotted(), [], 0)
