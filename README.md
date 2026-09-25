@@ -162,6 +162,8 @@ gpus = 0
 
 [experiments.quadratic_descent]      # per-experiment overrides, keyed by
 time = "00:30:00"                    # the Experiment's name
+gpus = 1
+mps = true                           # optional, share the GPU through CUDA MPS
 ```
 
 ```python
@@ -186,6 +188,11 @@ must install into and `EXPERIMENT_EXTRAS` to the extras that venv was built
 with, so one script can serve several venvs. What the script contains counts
 towards the venv's identity, so editing it rebuilds the venvs it applies to,
 and a venv that is already up to date runs nothing.
+
+`mps = true` starts a CUDA MPS server at the beginning of every job that
+asks for a GPU. The shards a worker runs in parallel (`parallel_shards`) then
+share the GPU through it and run their kernels at the same time, instead of
+taking turns. Each job gets its own server, which stops when the job ends.
 
 `EXPERIMENT_LOCAL_MODE=1` runs every "remote" command in a local shell,
 which is how the cluster flow is exercised without a cluster.
