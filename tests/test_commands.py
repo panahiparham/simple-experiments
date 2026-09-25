@@ -362,13 +362,17 @@ def run_py(tmp_path) -> Path:
     return script
 
 
-def invoke(script: Path, *argv: str) -> str:
+def attempt(script: Path, *argv: str) -> subprocess.CompletedProcess[str]:
     """Run a real experiment script the way a user would."""
     env = {**os.environ, "PYTHONPATH": str(PACKAGE_ROOT)}
-    done = subprocess.run(
+    return subprocess.run(
         [sys.executable, str(script), *argv],
         capture_output=True, text=True, env=env, check=False,
     )
+
+
+def invoke(script: Path, *argv: str) -> str:
+    done = attempt(script, *argv)
     assert done.returncode == 0, done.stderr
     return done.stdout
 
@@ -402,3 +406,87 @@ def test_the_plan_file_is_cleaned_up(run_py, tmp_path):
 def test_a_pool_is_capped_at_the_number_of_shards(run_py):
     out = invoke(run_py, "sweep", "--component", "b", "--num-workers", "16")
     assert "across 2 worker(s)" in out
+
+
+# --- parallel slots -----------------------------------------------------------
+
+
+SLOTTED_RUN_PY = '''\
+import dataclasses
+import os
+import time
+from pathlib import Path
+
+import numpy as np
+
+from experiment.commands import run
+from experiment.design import Component, Experiment
+
+RESULTS = Path(__file__).parent / "results"
+
+
+@dataclasses.dataclass(frozen=True)
+class Cfg:
+    LR: float = 1e-3
+
+
+def process(configs, seeds):
+    # Every shard waits until a second one has started, which only happens when
+    # shards run at the same time.
+    started = RESULTS / "started"
+    started.mkdir(parents=True, exist_ok=True)
+    (started / str(seeds[0])).touch()
+    if seeds[0] == int(os.environ.get("FAIL_SEED", -1)):
+        raise RuntimeError("this shard fails")
+    deadline = time.monotonic() + 30
+    while len(list(started.iterdir())) < 2:
+        if time.monotonic() > deadline:
+            raise TimeoutError("no other shard started")
+        time.sleep(0.01)
+    return [{"reward": np.arange(2.0) + s} for s in seeds]
+
+
+EXPERIMENT = Experiment(
+    name="toy",
+    results_dir=RESULTS,
+    components=[
+        Component(name="a", config=Cfg(), seeds=[0, 1, 2, 3], shard_size=1,
+                  parallel_shards=2),
+    ],
+)
+
+if __name__ == "__main__":
+    run(EXPERIMENT, process)
+'''
+
+
+@pytest.fixture
+def slotted_run_py(tmp_path) -> Path:
+    script = tmp_path / "run.py"
+    script.write_text(textwrap.dedent(SLOTTED_RUN_PY))
+    return script
+
+
+def test_a_components_slots_run_at_the_same_time(slotted_run_py):
+    out = invoke(slotted_run_py, "sweep")
+    assert "worker 0-0 stored 2 run(s)" in out
+    assert "worker 0-1 stored 2 run(s)" in out
+    assert "4 run(s), 4 done, 0 pending" in invoke(slotted_run_py, "status")
+
+
+def test_slots_run_within_each_of_several_workers(slotted_run_py):
+    invoke(slotted_run_py, "sweep", "--num-workers", "2")
+    assert "4 run(s), 4 done, 0 pending" in invoke(slotted_run_py, "status")
+
+
+def test_slot_parts_are_merged(slotted_run_py, tmp_path):
+    invoke(slotted_run_py, "sweep")
+    assert not (tmp_path / "results" / "toy.parts").exists()
+
+
+def test_a_failing_slot_keeps_its_siblings_results(
+    slotted_run_py, monkeypatch
+):
+    monkeypatch.setenv("FAIL_SEED", "1")
+    assert attempt(slotted_run_py, "sweep").returncode != 0
+    assert "4 run(s), 2 done, 2 pending" in invoke(slotted_run_py, "status")
