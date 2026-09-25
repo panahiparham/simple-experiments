@@ -15,7 +15,6 @@ from experiment.hypers import traced
 from experiment.identity import config_id
 from experiment.plan import (
     Phase,
-    assign_shards,
     assign_slots,
     batch_key,
     component_runs,
@@ -236,30 +235,6 @@ def test_overrides_reach_every_component():
 def test_planning_an_unknown_component_is_rejected():
     with pytest.raises(KeyError, match="nope"):
         plan_experiment(experiment(), components=["nope"])
-
-
-# --- worker assignment ------------------------------------------------------
-
-
-@pytest.mark.parametrize("num_workers", [1, 2, 3, 8])
-def test_workers_cover_the_plan_exactly_once(num_workers):
-    shards = plan_experiment(experiment(), shard_size=1)
-    assigned = assign_shards(shards, num_workers)
-    flat = [s for worker in assigned for s in worker]
-    assert len(assigned) == num_workers
-    assert sorted(map(id, flat)) == sorted(map(id, shards))
-
-
-@pytest.mark.parametrize("num_workers", [1, 2, 3, 8])
-def test_worker_loads_differ_by_at_most_one_shard(num_workers):
-    shards = plan_experiment(experiment(), shard_size=1)
-    loads = [len(w) for w in assign_shards(shards, num_workers)]
-    assert max(loads) - min(loads) <= 1
-
-
-def test_a_worker_pool_needs_at_least_one_worker():
-    with pytest.raises(ValueError, match="at least 1"):
-        assign_shards([], 0)
 
 
 # --- slot assignment --------------------------------------------------------

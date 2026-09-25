@@ -22,6 +22,7 @@ import pytest
 import experiment as experiment_package
 from experiment.commands import parse_overrides, run
 from experiment.design import Component, Experiment
+from experiment.plan import Phase, Shard
 from experiment.results import completed, load_runs
 
 PACKAGE_ROOT = Path(experiment_package.__file__).resolve().parents[1]
@@ -177,6 +178,10 @@ def test_sweep_leaves_no_parts_behind(experiment, tmp_path):
 # --- a sweep split into steps -----------------------------------------------
 
 
+def shards_of(share: list[Phase]) -> list[Shard]:
+    return [shard for phase in share for slot in phase.slots for shard in slot]
+
+
 def plan_file(experiment, tmp_path, workers, *extra) -> list:
     """Do the plan step and read back what the workers would be given."""
     path = tmp_path / "plan.pickle"
@@ -199,14 +204,14 @@ def test_the_plan_step_gives_every_worker_a_share(experiment, tmp_path):
 
 def test_the_plan_step_covers_every_run(experiment, tmp_path):
     shares = plan_file(experiment, tmp_path, 3)
-    assert sum(len(shard) for share in shares for shard in share) == 8
+    assert sum(len(shard) for share in shares for shard in shards_of(share)) == 8
 
 
 def test_a_worker_runs_only_its_own_share(experiment, tmp_path):
     shares = plan_file(experiment, tmp_path, 3)
     path = tmp_path / "plan.pickle"
     run(experiment, process, ["sweep", "--plan", str(path), "--worker-index", "0"])
-    expected = sum(len(shard) for shard in shares[0])
+    expected = sum(len(shard) for shard in shards_of(shares[0]))
     assert sum(len(v) for v in completed(experiment).values()) == expected
 
 

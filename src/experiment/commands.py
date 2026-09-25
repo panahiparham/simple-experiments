@@ -19,7 +19,9 @@ from typing import Sequence
 from experiment.design import Component, Experiment
 from experiment.legacy import migrate
 from experiment.plan import (
-    assign_shards,
+    Phase,
+    Shard,
+    assign_slots,
     component_runs,
     pack_shards,
     plan_experiment,
@@ -209,6 +211,11 @@ def _sweep_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _shards(phases: list[Phase]) -> list[Shard]:
+    """Every shard in a worker's phases, in the order they are run."""
+    return [shard for phase in phases for slot in phase.slots for shard in slot]
+
+
 def _run_workers(assignments: list, plan_path: Path) -> None:
     """Run one child process per worker and wait for all of them.
 
@@ -254,7 +261,7 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
     if args.plan is not None:
         if args.worker_index is None:
             raise SystemExit("--plan needs --worker-index")
-        mine = pickle.loads(Path(args.plan).read_bytes())[args.worker_index]
+        mine = _shards(pickle.loads(Path(args.plan).read_bytes())[args.worker_index])
         saved = run_shards(experiment, mine, process, worker=args.worker_index)
         print(
             f"[{experiment.name}] worker {args.worker_index} stored "
@@ -276,7 +283,8 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
         # waiting for it even if that share is empty.
         path = Path(args.write_plan)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(pickle.dumps(assign_shards(plan, max(1, args.num_workers))))
+        assignments = assign_slots(experiment, plan, max(1, args.num_workers))
+        path.write_bytes(pickle.dumps(assignments))
         runs = sum(len(shard) for shard in plan)
         print(
             f"[{experiment.name}] planned {runs} run(s) in {len(plan)} shard(s) "
@@ -298,7 +306,7 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
     if workers == 1:
         run_shards(experiment, plan, process)
     else:
-        assignments = assign_shards(plan, workers)
+        assignments = assign_slots(experiment, plan, workers)
         plan_path = _parts_dir(experiment) / "plan.pickle"
         plan_path.parent.mkdir(parents=True, exist_ok=True)
         plan_path.write_bytes(pickle.dumps(assignments))

@@ -29,7 +29,6 @@ __all__ = [
     "batch_key",
     "pack_shards",
     "plan_experiment",
-    "assign_shards",
     "Phase",
     "assign_slots",
 ]
@@ -257,30 +256,6 @@ def plan_experiment(
         size = shard_size if shard_size is not None else component.shard_size
         shards.extend(pack_shards(component.name, pending, size))
     return shards
-
-
-def assign_shards(shards: list[Shard], num_workers: int) -> list[list[Shard]]:
-    """Divide a plan's shards among a pool of workers.
-
-    Workers are dealt shards in turn, so their loads differ by at most one
-    shard however many there are, and consecutive shards - which come from the
-    same component and are therefore the most alike in cost - spread across
-    different workers rather than piling onto one.
-
-    Args:
-        shards: The shards to divide, as planned.
-        num_workers: How many workers share the plan.
-
-    Returns:
-        One list of shards per worker, in worker order. A worker with nothing
-        to do gets an empty list.
-
-    Raises:
-        ValueError: If ``num_workers`` is less than 1.
-    """
-    if num_workers < 1:
-        raise ValueError(f"num_workers must be at least 1; got {num_workers}")
-    return [shards[worker::num_workers] for worker in range(num_workers)]
 
 
 @dataclasses.dataclass(frozen=True)

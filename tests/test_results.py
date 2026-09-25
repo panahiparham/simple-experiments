@@ -14,7 +14,7 @@ import pytest
 
 from experiment.design import Component, Experiment
 from experiment.hypers import traced
-from experiment.plan import assign_shards, plan_experiment
+from experiment.plan import plan_experiment
 from experiment.results import (
     ResultWriter,
     _part_path,
@@ -61,9 +61,9 @@ def result(seed: int) -> dict:
 def run_everything(experiment: Experiment, num_workers: int = 1) -> None:
     """Compute and store every outstanding run, as a sweep would."""
     plan = plan_experiment(experiment, done=completed(experiment))
-    for worker, shards in enumerate(assign_shards(plan, num_workers)):
+    for worker in range(num_workers):
         with ResultWriter(experiment, worker) as writer:
-            for shard in shards:
+            for shard in plan[worker::num_workers]:
                 writer.save(shard, [result(r.seed) for r in shard.runs])
 
 
