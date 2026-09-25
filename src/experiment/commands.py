@@ -20,7 +20,6 @@ from experiment.design import Component, Experiment
 from experiment.legacy import migrate
 from experiment.plan import (
     Phase,
-    Shard,
     assign_slots,
     component_runs,
     pack_shards,
@@ -205,18 +204,14 @@ def _sweep_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--worker-index", type=int, default=None, help=argparse.SUPPRESS
     )
+    parser.add_argument("--part", default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "--merge-only", action="store_true", help=argparse.SUPPRESS
     )
     return parser
 
 
-def _shards(phases: list[Phase]) -> list[Shard]:
-    """Every shard in a worker's phases, in the order they are run."""
-    return [shard for phase in phases for slot in phase.slots for shard in slot]
-
-
-def _run_workers(assignments: list, plan_path: Path) -> None:
+def _run_workers(plan_path: Path, parts: list[str]) -> None:
     """Run one child process per worker and wait for all of them.
 
     Each child re-invokes this experiment's ``run.py``, so it inherits whatever
@@ -235,13 +230,51 @@ def _run_workers(assignments: list, plan_path: Path) -> None:
                 str(plan_path),
                 "--worker-index",
                 str(index),
+                "--part",
+                part,
             ]
         )
-        for index in range(len(assignments))
+        for index, part in enumerate(parts)
     ]
     codes = [child.wait() for child in children]
     if any(codes):
         raise SystemExit(f"worker(s) failed with exit codes {codes}")
+
+
+def _run_slots(experiment: Experiment, phase: Phase, part: str) -> None:
+    """Run each of a phase's slots in its own process and wait for all of them.
+
+    Each slot is handed a one-slot phase, so it runs its shards in turn like any
+    worker and writes a part of its own.
+    """
+    path = _parts_dir(experiment) / f"slots-{part}.pickle"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        pickle.dumps([[Phase(phase.component, (slot,))] for slot in phase.slots])
+    )
+    try:
+        _run_workers(path, [f"{part}-{index}" for index in range(len(phase.slots))])
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _run_phases(
+    experiment: Experiment, phases: list[Phase], process: ShardFn, part: str
+) -> tuple[int, int]:
+    """Run a worker's phases in turn.
+
+    Returns:
+        The runs stored and the shards run by this process. Slot processes
+        report their own.
+    """
+    saved = ran = 0
+    for phase in phases:
+        if len(phase.slots) == 1:
+            saved += run_shards(experiment, phase.slots[0], process, part=part)
+            ran += len(phase.slots[0])
+            continue
+        _run_slots(experiment, phase, part)
+    return saved, ran
 
 
 def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
@@ -261,12 +294,14 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
     if args.plan is not None:
         if args.worker_index is None:
             raise SystemExit("--plan needs --worker-index")
-        mine = _shards(pickle.loads(Path(args.plan).read_bytes())[args.worker_index])
-        saved = run_shards(experiment, mine, process, part=str(args.worker_index))
-        print(
-            f"[{experiment.name}] worker {args.worker_index} stored "
-            f"{saved} run(s) from {len(mine)} shard(s)"
-        )
+        phases = pickle.loads(Path(args.plan).read_bytes())[args.worker_index]
+        part = args.part or str(args.worker_index)
+        saved, ran = _run_phases(experiment, phases, process, part)
+        if ran or not phases:
+            print(
+                f"[{experiment.name}] worker {part} stored "
+                f"{saved} run(s) from {ran} shard(s)"
+            )
         return
 
     plan = plan_experiment(
@@ -304,14 +339,14 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
     )
 
     if workers == 1:
-        run_shards(experiment, plan, process)
+        _run_phases(experiment, assign_slots(experiment, plan, 1)[0], process, "0")
     else:
         assignments = assign_slots(experiment, plan, workers)
         plan_path = _parts_dir(experiment) / "plan.pickle"
         plan_path.parent.mkdir(parents=True, exist_ok=True)
         plan_path.write_bytes(pickle.dumps(assignments))
         try:
-            _run_workers(assignments, plan_path)
+            _run_workers(plan_path, [str(index) for index in range(workers)])
         finally:
             plan_path.unlink(missing_ok=True)
 
