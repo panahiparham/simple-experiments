@@ -75,6 +75,14 @@ def _add_override_flag(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _at_least_one(text: str) -> int:
+    """Read a command-line count that must be at least 1."""
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1; got {value}")
+    return value
+
+
 def _one_component(experiment: Experiment, name: str | None) -> Component:
     """Pick the component a single run belongs to.
 
@@ -193,6 +201,7 @@ def _sweep_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="run.py sweep")
     parser.add_argument("--num-workers", type=int, default=1)
     parser.add_argument("--shard-size", type=int, default=None)
+    parser.add_argument("--parallel-shards", type=_at_least_one, default=None)
     parser.add_argument("--component", nargs="+", default=None)
     _add_override_flag(parser)
     # A local sweep does all three steps itself. A cluster sweep schedules them
@@ -318,7 +327,10 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
         # waiting for it even if that share is empty.
         path = Path(args.write_plan)
         path.parent.mkdir(parents=True, exist_ok=True)
-        assignments = assign_slots(experiment, plan, max(1, args.num_workers))
+        assignments = assign_slots(
+            experiment, plan, max(1, args.num_workers),
+            parallel_shards=args.parallel_shards,
+        )
         path.write_bytes(pickle.dumps(assignments))
         runs = sum(len(shard) for shard in plan)
         print(
@@ -338,10 +350,12 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
         f"across {workers} worker(s)"
     )
 
+    assignments = assign_slots(
+        experiment, plan, workers, parallel_shards=args.parallel_shards
+    )
     if workers == 1:
-        _run_phases(experiment, assign_slots(experiment, plan, 1)[0], process, "0")
+        _run_phases(experiment, assignments[0], process, "0")
     else:
-        assignments = assign_slots(experiment, plan, workers)
         plan_path = _parts_dir(experiment) / "plan.pickle"
         plan_path.parent.mkdir(parents=True, exist_ok=True)
         plan_path.write_bytes(pickle.dumps(assignments))
