@@ -74,9 +74,9 @@ def _parts_dir(experiment: Experiment) -> Path:
     return experiment.results_dir / f"{experiment.name}.parts"
 
 
-def _part_path(experiment: Experiment, worker: int) -> Path:
-    """The database one worker writes during a sweep."""
-    return _parts_dir(experiment) / f"part-{int(worker)}.db"
+def _part_path(experiment: Experiment, part: str) -> Path:
+    """The database one worker, or one of its slots, writes during a sweep."""
+    return _parts_dir(experiment) / f"part-{part}.db"
 
 
 def _part_paths(experiment: Experiment) -> list[Path]:
@@ -206,8 +206,8 @@ class ResultWriter:
         path: The part database this writer owns.
     """
 
-    def __init__(self, experiment: Experiment, worker: int = 0) -> None:
-        self.path = _part_path(experiment, worker)
+    def __init__(self, experiment: Experiment, part: str = "0") -> None:
+        self.path = _part_path(experiment, part)
         self._conn: sqlite3.Connection | None = None
         self._tables: set[str] = set()
 

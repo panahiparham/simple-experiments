@@ -22,6 +22,7 @@ import pytest
 import experiment as experiment_package
 from experiment.commands import parse_overrides, run
 from experiment.design import Component, Experiment
+from experiment.plan import Phase, Shard
 from experiment.results import completed, load_runs
 
 PACKAGE_ROOT = Path(experiment_package.__file__).resolve().parents[1]
@@ -177,6 +178,10 @@ def test_sweep_leaves_no_parts_behind(experiment, tmp_path):
 # --- a sweep split into steps -----------------------------------------------
 
 
+def shards_of(share: list[Phase]) -> list[Shard]:
+    return [shard for phase in share for slot in phase.slots for shard in slot]
+
+
 def plan_file(experiment, tmp_path, workers, *extra) -> list:
     """Do the plan step and read back what the workers would be given."""
     path = tmp_path / "plan.pickle"
@@ -199,14 +204,31 @@ def test_the_plan_step_gives_every_worker_a_share(experiment, tmp_path):
 
 def test_the_plan_step_covers_every_run(experiment, tmp_path):
     shares = plan_file(experiment, tmp_path, 3)
-    assert sum(len(shard) for share in shares for shard in share) == 8
+    assert sum(len(shard) for share in shares for shard in shards_of(share)) == 8
+
+
+def test_the_plan_step_gives_each_worker_one_slot_per_component(
+    experiment, tmp_path
+):
+    shares = plan_file(experiment, tmp_path, 1)
+    assert [len(phase.slots) for phase in shares[0]] == [1, 1]
+
+
+def test_parallel_shards_sets_every_components_slots(experiment, tmp_path):
+    shares = plan_file(experiment, tmp_path, 1, "--parallel-shards", "2")
+    assert [len(phase.slots) for phase in shares[0]] == [2, 2]
+
+
+def test_parallel_shards_below_one_is_refused(experiment, tmp_path):
+    with pytest.raises(SystemExit):
+        plan_file(experiment, tmp_path, 1, "--parallel-shards", "0")
 
 
 def test_a_worker_runs_only_its_own_share(experiment, tmp_path):
     shares = plan_file(experiment, tmp_path, 3)
     path = tmp_path / "plan.pickle"
     run(experiment, process, ["sweep", "--plan", str(path), "--worker-index", "0"])
-    expected = sum(len(shard) for shard in shares[0])
+    expected = sum(len(shard) for shard in shards_of(shares[0]))
     assert sum(len(v) for v in completed(experiment).values()) == expected
 
 
@@ -259,6 +281,16 @@ def test_status_counts_what_has_been_run(experiment, capsys):
 def test_status_reports_the_useful_worker_count(experiment, capsys):
     run(experiment, refuse, ["status", "--shard-size", "1"])
     assert "--num-workers 8" in capsys.readouterr().out
+
+
+def test_status_counts_workers_by_the_shards_each_runs_at_once(
+    experiment, capsys
+):
+    run(
+        experiment, refuse,
+        ["status", "--shard-size", "1", "--parallel-shards", "4"],
+    )
+    assert "--num-workers 3" in capsys.readouterr().out
 
 
 def test_status_says_nothing_about_workers_when_finished(experiment, capsys):
@@ -357,13 +389,17 @@ def run_py(tmp_path) -> Path:
     return script
 
 
-def invoke(script: Path, *argv: str) -> str:
+def attempt(script: Path, *argv: str) -> subprocess.CompletedProcess[str]:
     """Run a real experiment script the way a user would."""
     env = {**os.environ, "PYTHONPATH": str(PACKAGE_ROOT)}
-    done = subprocess.run(
+    return subprocess.run(
         [sys.executable, str(script), *argv],
         capture_output=True, text=True, env=env, check=False,
     )
+
+
+def invoke(script: Path, *argv: str) -> str:
+    done = attempt(script, *argv)
     assert done.returncode == 0, done.stderr
     return done.stdout
 
@@ -397,3 +433,87 @@ def test_the_plan_file_is_cleaned_up(run_py, tmp_path):
 def test_a_pool_is_capped_at_the_number_of_shards(run_py):
     out = invoke(run_py, "sweep", "--component", "b", "--num-workers", "16")
     assert "across 2 worker(s)" in out
+
+
+# --- parallel slots -----------------------------------------------------------
+
+
+SLOTTED_RUN_PY = '''\
+import dataclasses
+import os
+import time
+from pathlib import Path
+
+import numpy as np
+
+from experiment.commands import run
+from experiment.design import Component, Experiment
+
+RESULTS = Path(__file__).parent / "results"
+
+
+@dataclasses.dataclass(frozen=True)
+class Cfg:
+    LR: float = 1e-3
+
+
+def process(configs, seeds):
+    # Every shard waits until a second one has started, which only happens when
+    # shards run at the same time.
+    started = RESULTS / "started"
+    started.mkdir(parents=True, exist_ok=True)
+    (started / str(seeds[0])).touch()
+    if seeds[0] == int(os.environ.get("FAIL_SEED", -1)):
+        raise RuntimeError("this shard fails")
+    deadline = time.monotonic() + 30
+    while len(list(started.iterdir())) < 2:
+        if time.monotonic() > deadline:
+            raise TimeoutError("no other shard started")
+        time.sleep(0.01)
+    return [{"reward": np.arange(2.0) + s} for s in seeds]
+
+
+EXPERIMENT = Experiment(
+    name="toy",
+    results_dir=RESULTS,
+    components=[
+        Component(name="a", config=Cfg(), seeds=[0, 1, 2, 3], shard_size=1,
+                  parallel_shards=2),
+    ],
+)
+
+if __name__ == "__main__":
+    run(EXPERIMENT, process)
+'''
+
+
+@pytest.fixture
+def slotted_run_py(tmp_path) -> Path:
+    script = tmp_path / "run.py"
+    script.write_text(textwrap.dedent(SLOTTED_RUN_PY))
+    return script
+
+
+def test_a_components_slots_run_at_the_same_time(slotted_run_py):
+    out = invoke(slotted_run_py, "sweep")
+    assert "worker 0-0 stored 2 run(s)" in out
+    assert "worker 0-1 stored 2 run(s)" in out
+    assert "4 run(s), 4 done, 0 pending" in invoke(slotted_run_py, "status")
+
+
+def test_slots_run_within_each_of_several_workers(slotted_run_py):
+    invoke(slotted_run_py, "sweep", "--num-workers", "2")
+    assert "4 run(s), 4 done, 0 pending" in invoke(slotted_run_py, "status")
+
+
+def test_slot_parts_are_merged(slotted_run_py, tmp_path):
+    invoke(slotted_run_py, "sweep")
+    assert not (tmp_path / "results" / "toy.parts").exists()
+
+
+def test_a_failing_slot_keeps_its_siblings_results(
+    slotted_run_py, monkeypatch
+):
+    monkeypatch.setenv("FAIL_SEED", "1")
+    assert attempt(slotted_run_py, "sweep").returncode != 0
+    assert "4 run(s), 2 done, 2 pending" in invoke(slotted_run_py, "status")

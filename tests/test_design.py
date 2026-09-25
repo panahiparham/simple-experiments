@@ -46,6 +46,16 @@ def test_a_shard_size_of_one_is_allowed():
     assert Component(name="a", config=None, shard_size=1).shard_size == 1
 
 
+def test_a_component_runs_one_shard_at_a_time_by_default():
+    assert Component(name="a", config=None).parallel_shards == 1
+
+
+@pytest.mark.parametrize("parallel", [0, -1])
+def test_parallel_shards_below_one_is_rejected(parallel):
+    with pytest.raises(ValueError, match=r"parallel_shards=.*at least 1"):
+        Component(name="a", config=None, parallel_shards=parallel)
+
+
 def test_an_experiment_with_no_components_is_rejected():
     with pytest.raises(ValueError, match="defines no components"):
         Experiment(name="toy", components=[], results_dir=Path("results"))

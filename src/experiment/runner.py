@@ -27,7 +27,7 @@ def run_shards(
     shards: Sequence[Shard],
     process: ShardFn,
     *,
-    worker: int = 0,
+    part: str = "0",
 ) -> int:
     """Compute a list of shards and store their results.
 
@@ -38,7 +38,7 @@ def run_shards(
         experiment: The experiment the shards belong to.
         shards: The shards this worker is to compute, in order.
         process: The project's shard function.
-        worker: This worker's index, which picks the part it writes to.
+        part: Names the part this worker writes to.
 
     Returns:
         The number of runs stored.
@@ -47,7 +47,7 @@ def run_shards(
         ValueError: If ``process`` does not return one result per run.
     """
     saved = 0
-    with ResultWriter(experiment, worker) as writer:
+    with ResultWriter(experiment, part) as writer:
         for shard in shards:
             results = process(shard.configs, shard.seeds)
             saved += writer.save(shard, list(results))

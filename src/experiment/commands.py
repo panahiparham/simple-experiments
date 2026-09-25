@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import math
 import pickle
 import subprocess
 import sys
@@ -19,7 +20,8 @@ from typing import Sequence
 from experiment.design import Component, Experiment
 from experiment.legacy import migrate
 from experiment.plan import (
-    assign_shards,
+    Phase,
+    assign_slots,
     component_runs,
     pack_shards,
     plan_experiment,
@@ -72,6 +74,14 @@ def _add_override_flag(parser: argparse.ArgumentParser) -> None:
         metavar="PATH=VALUE",
         help="override a config field, e.g. --set AGENT_HYPERS.LR=0.001",
     )
+
+
+def _at_least_one(text: str) -> int:
+    """Read a command-line count that must be at least 1."""
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1; got {value}")
+    return value
 
 
 def _one_component(experiment: Experiment, name: str | None) -> Component:
@@ -192,6 +202,7 @@ def _sweep_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="run.py sweep")
     parser.add_argument("--num-workers", type=int, default=1)
     parser.add_argument("--shard-size", type=int, default=None)
+    parser.add_argument("--parallel-shards", type=_at_least_one, default=None)
     parser.add_argument("--component", nargs="+", default=None)
     _add_override_flag(parser)
     # A local sweep does all three steps itself. A cluster sweep schedules them
@@ -203,13 +214,14 @@ def _sweep_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--worker-index", type=int, default=None, help=argparse.SUPPRESS
     )
+    parser.add_argument("--part", default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "--merge-only", action="store_true", help=argparse.SUPPRESS
     )
     return parser
 
 
-def _run_workers(assignments: list, plan_path: Path) -> None:
+def _run_workers(plan_path: Path, parts: list[str]) -> None:
     """Run one child process per worker and wait for all of them.
 
     Each child re-invokes this experiment's ``run.py``, so it inherits whatever
@@ -228,13 +240,51 @@ def _run_workers(assignments: list, plan_path: Path) -> None:
                 str(plan_path),
                 "--worker-index",
                 str(index),
+                "--part",
+                part,
             ]
         )
-        for index in range(len(assignments))
+        for index, part in enumerate(parts)
     ]
     codes = [child.wait() for child in children]
     if any(codes):
         raise SystemExit(f"worker(s) failed with exit codes {codes}")
+
+
+def _run_slots(experiment: Experiment, phase: Phase, part: str) -> None:
+    """Run each of a phase's slots in its own process and wait for all of them.
+
+    Each slot is handed a one-slot phase, so it runs its shards in turn like any
+    worker and writes a part of its own.
+    """
+    path = _parts_dir(experiment) / f"slots-{part}.pickle"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        pickle.dumps([[Phase(phase.component, (slot,))] for slot in phase.slots])
+    )
+    try:
+        _run_workers(path, [f"{part}-{index}" for index in range(len(phase.slots))])
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _run_phases(
+    experiment: Experiment, phases: list[Phase], process: ShardFn, part: str
+) -> tuple[int, int]:
+    """Run a worker's phases in turn.
+
+    Returns:
+        The runs stored and the shards run by this process. Slot processes
+        report their own.
+    """
+    saved = ran = 0
+    for phase in phases:
+        if len(phase.slots) == 1:
+            saved += run_shards(experiment, phase.slots[0], process, part=part)
+            ran += len(phase.slots[0])
+            continue
+        _run_slots(experiment, phase, part)
+    return saved, ran
 
 
 def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
@@ -254,12 +304,14 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
     if args.plan is not None:
         if args.worker_index is None:
             raise SystemExit("--plan needs --worker-index")
-        mine = pickle.loads(Path(args.plan).read_bytes())[args.worker_index]
-        saved = run_shards(experiment, mine, process, worker=args.worker_index)
-        print(
-            f"[{experiment.name}] worker {args.worker_index} stored "
-            f"{saved} run(s) from {len(mine)} shard(s)"
-        )
+        phases = pickle.loads(Path(args.plan).read_bytes())[args.worker_index]
+        part = args.part or str(args.worker_index)
+        saved, ran = _run_phases(experiment, phases, process, part)
+        if ran or not phases:
+            print(
+                f"[{experiment.name}] worker {part} stored "
+                f"{saved} run(s) from {ran} shard(s)"
+            )
         return
 
     plan = plan_experiment(
@@ -276,7 +328,11 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
         # waiting for it even if that share is empty.
         path = Path(args.write_plan)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(pickle.dumps(assign_shards(plan, max(1, args.num_workers))))
+        assignments = assign_slots(
+            experiment, plan, max(1, args.num_workers),
+            parallel_shards=args.parallel_shards,
+        )
+        path.write_bytes(pickle.dumps(assignments))
         runs = sum(len(shard) for shard in plan)
         print(
             f"[{experiment.name}] planned {runs} run(s) in {len(plan)} shard(s) "
@@ -295,15 +351,17 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
         f"across {workers} worker(s)"
     )
 
+    assignments = assign_slots(
+        experiment, plan, workers, parallel_shards=args.parallel_shards
+    )
     if workers == 1:
-        run_shards(experiment, plan, process)
+        _run_phases(experiment, assignments[0], process, "0")
     else:
-        assignments = assign_shards(plan, workers)
         plan_path = _parts_dir(experiment) / "plan.pickle"
         plan_path.parent.mkdir(parents=True, exist_ok=True)
         plan_path.write_bytes(pickle.dumps(assignments))
         try:
-            _run_workers(assignments, plan_path)
+            _run_workers(plan_path, [str(index) for index in range(workers)])
         finally:
             plan_path.unlink(missing_ok=True)
 
@@ -333,13 +391,14 @@ def _status(experiment: Experiment, argv: list[str]) -> None:
     """
     parser = argparse.ArgumentParser(prog="run.py status")
     parser.add_argument("--shard-size", type=int, default=None)
+    parser.add_argument("--parallel-shards", type=_at_least_one, default=None)
     parser.add_argument("--component", nargs="+", default=None)
     _add_override_flag(parser)
     args = parser.parse_args(argv)
 
     overrides = parse_overrides(args.overrides)
     stored = completed(experiment)
-    total_runs = total_done = total_shards = 0
+    total_runs = total_done = total_shards = useful_workers = 0
     for component in _select(experiment, args.component):
         runs = component_runs(component, overrides)
         done = stored.get(component.name, set())
@@ -353,6 +412,12 @@ def _status(experiment: Experiment, argv: list[str]) -> None:
         total_runs += len(runs)
         total_done += len(runs) - len(pending)
         total_shards += len(shards)
+        parallel = (
+            args.parallel_shards
+            if args.parallel_shards is not None
+            else component.parallel_shards
+        )
+        useful_workers += math.ceil(len(shards) / parallel)
         print(
             f"[{component.name}] {len(runs)} run(s): "
             f"{len(runs) - len(pending)} done, {len(pending)} pending "
@@ -364,7 +429,9 @@ def _status(experiment: Experiment, argv: list[str]) -> None:
         f"{total_runs - total_done} pending"
     )
     if total_shards:
-        summary += f" in {total_shards} shard(s) -> up to --num-workers {total_shards}"
+        summary += (
+            f" in {total_shards} shard(s) -> up to --num-workers {useful_workers}"
+        )
     print(summary)
 
 

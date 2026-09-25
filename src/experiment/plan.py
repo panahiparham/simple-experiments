@@ -29,7 +29,8 @@ __all__ = [
     "batch_key",
     "pack_shards",
     "plan_experiment",
-    "assign_shards",
+    "Phase",
+    "assign_slots",
 ]
 
 
@@ -257,25 +258,74 @@ def plan_experiment(
     return shards
 
 
-def assign_shards(shards: list[Shard], num_workers: int) -> list[list[Shard]]:
-    """Divide a plan's shards among a pool of workers.
+@dataclasses.dataclass(frozen=True)
+class Phase:
+    """One component's share of a worker's plan, split across parallel slots.
 
-    Workers are dealt shards in turn, so their loads differ by at most one
-    shard however many there are, and consecutive shards - which come from the
-    same component and are therefore the most alike in cost - spread across
-    different workers rather than piling onto one.
+    A worker runs its phases one after another, and a phase's slots at the same
+    time, so only one component's shards ever compete for a worker's resources.
+
+    Attributes:
+        component: The name of the component the shards belong to.
+        slots: The shards each slot runs in turn, one tuple per slot.
+    """
+
+    component: str
+    slots: tuple[tuple[Shard, ...], ...]
+
+
+def assign_slots(
+    experiment: Experiment,
+    shards: list[Shard],
+    num_workers: int,
+    *,
+    parallel_shards: int | None = None,
+) -> list[list[Phase]]:
+    """Divide a plan's shards among a pool of workers and their parallel slots.
+
+    Each component's shards are dealt to workers in groups of its
+    ``parallel_shards``, taking turns across components, so a worker receives
+    enough of a component's shards to fill its slots before the next worker
+    gets any. With one slot per component this deals single shards in turn,
+    keeping workers' loads within one shard of each other.
 
     Args:
+        experiment: The experiment the shards were planned from.
         shards: The shards to divide, as planned.
         num_workers: How many workers share the plan.
+        parallel_shards: Replaces every component's own ``parallel_shards``.
 
     Returns:
-        One list of shards per worker, in worker order. A worker with nothing
-        to do gets an empty list.
+        One list of phases per worker, in worker order and components in plan
+        order. A worker with nothing to do gets an empty list.
 
     Raises:
         ValueError: If ``num_workers`` is less than 1.
     """
     if num_workers < 1:
         raise ValueError(f"num_workers must be at least 1; got {num_workers}")
-    return [shards[worker::num_workers] for worker in range(num_workers)]
+
+    by_component: dict[str, list[Shard]] = {}
+    for shard in shards:
+        by_component.setdefault(shard.component, []).append(shard)
+
+    workers: list[list[Phase]] = [[] for _ in range(num_workers)]
+    turn = 0
+    for name, component_shards in by_component.items():
+        slots = (
+            parallel_shards
+            if parallel_shards is not None
+            else experiment.component(name).parallel_shards
+        )
+        dealt: list[list[Shard]] = [[] for _ in range(num_workers)]
+        for start in range(0, len(component_shards), slots):
+            dealt[turn % num_workers].extend(component_shards[start:start + slots])
+            turn += 1
+        for phases, owned in zip(workers, dealt, strict=True):
+            if not owned:
+                continue
+            split = tuple(
+                tuple(owned[slot::slots]) for slot in range(min(slots, len(owned)))
+            )
+            phases.append(Phase(component=name, slots=split))
+    return workers
