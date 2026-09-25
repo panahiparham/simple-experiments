@@ -62,6 +62,12 @@ function together, so it can compute them in one batched call. Everything
 else is static and fixes shapes and objects - sweeping a static field is not
 an error, it just puts those runs in separate shards.
 
+`parallel_shards` sets how many of a component's shards one worker runs at
+the same time, each in its own process. It defaults to 1, which runs a
+worker's shards one after another. A worker finishes one component's shards
+before it starts the next, so components with different resource needs never
+run side by side.
+
 ### Run the experiment
 
 ```python
@@ -94,6 +100,7 @@ the harness does not care.
 run.py status                        # runs done, runs pending, shards pending
 run.py sweep --num-workers 6         # across 6 local worker processes
 run.py sweep --num-workers 6 --slurm # the same work as a SLURM array
+run.py sweep --parallel-shards 4     # each worker runs 4 shards at once
 run.py single --component tuned --seed 0
 run.py sync                          # bring the cluster's results home
 run.py sync --push                   # send local-only results there instead

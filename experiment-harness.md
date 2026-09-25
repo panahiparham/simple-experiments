@@ -14,6 +14,7 @@
     3. Sweep: a dict mapping config keys to list of values to sweep over. These would override the values in the config for each run of the experiment when specified.
     4. Seeds: a list of integers.
     5. Shard size: an integer that defined how many runs to pack into a Shard.
+    6. Parallel shards: an integer that defines how many Shards a worker runs at the same time.
 
 - A Shard is a sequence of Runs that is supposed to be executed together.
 
@@ -24,7 +25,7 @@
 # Running an Experiment
 - An experiment is run either locally or on a cluster.
 - In both casese, a fully specified Experiment is expanded into a set of Shards, filtering out any run whose result already exists before partitioning the remaining runs into Shards.
-- The user specifies num-workers and the Shards are distributed equally among the workers to be proceessed in parallel. Within each worker, the Shards are processed sequentially.
+- The user specifies num-workers and the Shards are distributed equally among the workers to be proceessed in parallel. Within each worker, each Component's Shards are processed sequentially, or up to that Component's parallel shards at a time.
 - The user must provide a function that processes a Shard. So it takes a sequence of configs and a sequence of seeds and returns a sequence of results.
 - The results of each Run is stored in a databse in the results folder. One database for each experiment. One table for each Component. One row for each Run. The row contained the run_id (a hash of the config and seed), the config, the seed, and the result stored as a binary blob. The database is used to filter out runs that have already been completed and to store the results of new runs.
 
