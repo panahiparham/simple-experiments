@@ -14,7 +14,7 @@ shares; :mod:`experiment.results` is the store to read results back from.
 """
 
 from experiment.commands import run
-from experiment.design import Component, Experiment
+from experiment.design import Component, Experiment, SlurmResources
 from experiment.hypers import TRACED, traced
 from experiment.identity import config_id, run_id
 from experiment.plan import Run, Shard
@@ -31,6 +31,7 @@ from experiment.runner import ShardFn
 __all__ = [
     "Component",
     "Experiment",
+    "SlurmResources",
     "Run",
     "Shard",
     "ShardFn",

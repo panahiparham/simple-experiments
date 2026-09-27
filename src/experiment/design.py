@@ -18,9 +18,21 @@ import dataclasses
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
-__all__ = ["Component", "Experiment"]
+__all__ = ["Component", "Experiment", "SlurmResources"]
+
+
+class SlurmResources(TypedDict, total=False):
+    """Slurm resources: the ``[slurm]`` defaults, or an experiment's overrides."""
+
+    time: str
+    cpus_per_task: int
+    mem: str
+    mem_per_cpu: str
+    gpus: int
+    mps: bool
+    account: str
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
