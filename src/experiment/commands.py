@@ -384,11 +384,12 @@ def _select(experiment: Experiment, names: list[str] | None) -> list[Component]:
         raise SystemExit(str(error)) from None
 
 
-def _status(experiment: Experiment, argv: list[str]) -> None:
+def _status(experiment: Experiment, cluster: _Cluster, argv: list[str]) -> None:
     """Report how much of an experiment is done and how much is left.
 
     Reads only the results directory, so it answers the same either side of a
-    cluster run and needs no connection to one.
+    cluster run and needs no connection to one. With ``--slurm`` it also reports
+    what a dispatch would request, read from the cluster config alone.
     """
     parser = argparse.ArgumentParser(prog="run.py status")
     parser.add_argument("--shard-size", type=int, default=None)
@@ -434,6 +435,9 @@ def _status(experiment: Experiment, argv: list[str]) -> None:
             f" in {total_shards} shard(s) -> up to --num-workers {useful_workers}"
         )
     print(summary)
+
+    if cluster.enabled:
+        slurm.report_resources(label=experiment.name, config_path=cluster.config)
 
 
 def _migrate(experiment: Experiment, argv: list[str]) -> None:
@@ -521,7 +525,8 @@ def run(
 
     Adding ``--slurm`` to ``single`` or ``sweep`` runs that same work on the
     cluster instead of here, so the workflow is one command and one flag either
-    way. ``sync``, ``queue`` and ``logs`` only ever concern the cluster.
+    way; on ``status`` it adds what that work would request there. ``sync``,
+    ``queue`` and ``logs`` only ever concern the cluster.
 
     Args:
         experiment: The experiment to act on.
@@ -556,15 +561,10 @@ def run(
             )
         return
 
-    if cluster.enabled:
+    if cluster.enabled and mode != "status":
         if mode != "single" and mode != "sweep":
             raise SystemExit(
                 f"[{experiment.name}] {mode} runs here, not on the cluster"
-                + (
-                    "; queue reports what the cluster is doing"
-                    if mode == "status"
-                    else ""
-                )
             )
         slurm.dispatch(
             label=experiment.name,
@@ -581,7 +581,7 @@ def run(
     elif mode == "sweep":
         _sweep(experiment, process, rest)
     elif mode == "status":
-        _status(experiment, rest)
+        _status(experiment, cluster, rest)
     elif mode == "delete":
         _delete(experiment, rest)
     elif mode == "migrate":
