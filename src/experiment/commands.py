@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from experiment import slurm
 from experiment.design import Component, Experiment
 from experiment.legacy import migrate
 from experiment.plan import (
@@ -502,8 +503,6 @@ def _sync(experiment: Experiment, cluster: _Cluster, argv: list[str]) -> None:
     )
     args = parser.parse_args(argv)
 
-    from experiment import slurm
-
     if args.push:
         slurm.push(experiment, config_path=cluster.config)
         print(f"[{experiment.name}] pushed local results to the cluster")
@@ -545,8 +544,6 @@ def run(
     mode, rest = argv[0], argv[1:]
 
     if mode in ("sync", "queue", "logs"):
-        from experiment import slurm
-
         if mode == "sync":
             _sync(experiment, cluster, rest)
         elif mode == "queue":
@@ -569,8 +566,6 @@ def run(
                     else ""
                 )
             )
-        from experiment import slurm
-
         slurm.dispatch(
             label=experiment.name,
             run_py=Path(sys.argv[0]).resolve(),
