@@ -67,6 +67,7 @@ __all__ = [
     "push",
     "wipe",
     "is_queued",
+    "report_resources",
     "status",
     "logs",
     "setup",
@@ -396,9 +397,9 @@ def _job_command(
 def resource_flags(resources: dict) -> list[str]:
     """Build the sbatch flags a job actually gets.
 
-    Public so ``plan --slurm`` reports what would be requested rather than the
-    merged table, which can mislead: an experiment overriding ``mem`` leaves the
-    default ``mem_per_cpu`` sitting in the table unused.
+    The resources report shows these rather than the merged table, which can
+    mislead: an experiment overriding ``mem`` leaves the default ``mem_per_cpu``
+    sitting in the table unused.
 
     Args:
         resources: The job's merged resource table.
@@ -762,6 +763,20 @@ def is_queued(*, label: str, config_path: str | Path | None = None) -> bool:
     queued = _ssh(cfg, f"squeue -j {shlex.quote(ids)} -h 2>/dev/null || true",
                  check=False)
     return bool(queued.strip())
+
+
+def report_resources(*, label: str, config_path: str | Path | None = None) -> None:
+    """Report what this experiment's jobs would request, without the cluster.
+
+    Args:
+        label: The experiment name.
+        config_path: The ``cluster.toml`` to read, defaulting to the repo root's.
+    """
+    cfg = load_config(config_path)
+    resources = resources_for(cfg, label)
+    mps = ", mps" if _uses_mps(resources) else ""
+    flags = " ".join(_sbatch_flags(cfg, resources))
+    print(f"[{label}] {venv_name(resources)} venv{mps}: {flags}")
 
 
 def status(*, label: str, config_path: str | Path | None = None) -> None:
