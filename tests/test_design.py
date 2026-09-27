@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from experiment.design import Component, Experiment
+from experiment.design import Component, Experiment, SlurmResources
 
 NOT_IDENTIFIERS = [
     "9lives",
@@ -71,3 +72,25 @@ def test_two_components_sharing_a_name_are_rejected():
             ],
             results_dir=Path("results"),
         )
+
+
+def slurm_experiment(slurm: SlurmResources) -> Experiment:
+    return Experiment(
+        name="toy",
+        components=[Component(name="a", config=None)],
+        results_dir=Path("results"),
+        slurm=slurm,
+    )
+
+
+def test_an_unknown_slurm_key_is_rejected():
+    typo: Any = {"tme": "1:00:00"}
+
+    with pytest.raises(ValueError, match=r"unknown slurm key\(s\) \['tme'\]"):
+        slurm_experiment(typo)
+
+
+def test_known_slurm_keys_are_kept():
+    slurm = SlurmResources(time="1:00:00", gpus=1, mps=True, account="def-a")
+
+    assert slurm_experiment(slurm).slurm == slurm
