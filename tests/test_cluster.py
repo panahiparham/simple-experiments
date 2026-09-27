@@ -163,6 +163,13 @@ def test_an_unknown_slurm_key_is_rejected(tmp_path):
         slurm.load_config(path)
 
 
+def test_a_leftover_experiments_table_is_rejected(tmp_path):
+    path = write_config(tmp_path, '[experiments.toy]\ntime = "8:00:00"\n')
+
+    with pytest.raises(SystemExit, match=r"unknown table\(s\) \['experiments'\]"):
+        slurm.load_config(path)
+
+
 def test_an_experiment_override_lands_on_top_of_the_defaults(tmp_path):
     path = write_config(
         tmp_path,

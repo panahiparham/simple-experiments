@@ -77,6 +77,7 @@ __all__ = [
 ]
 
 DEFAULT_CONFIG_PATH = "cluster.toml"
+_TABLES = frozenset({"project", "cluster", "venvs", "slurm"})
 
 # A configured root may contain a literal $HOME for the cluster's shell to expand.
 # Expanding it costs an ssh round trip, so cache per (host, root) for this process.
@@ -135,8 +136,8 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
         The parsed configuration.
 
     Raises:
-        SystemExit: If no config exists at ``path``, or it sets an unknown
-            ``[slurm]`` key.
+        SystemExit: If no config exists at ``path``, or it has an unknown table
+            or ``[slurm]`` key.
     """
     path = repo_root() / DEFAULT_CONFIG_PATH if path is None else Path(path)
     if not path.is_file():
@@ -144,6 +145,7 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
             f"no cluster config at {path} (see cluster.toml in the repo root)"
         )
     data = tomllib.loads(path.read_text())
+    _reject_unknown(data, _TABLES, "table(s)", path)
     slurm = data.get("slurm", {})
     _reject_unknown(slurm, SlurmResources.__optional_keys__, "[slurm] key(s)", path)
     cluster = data.get("cluster", {})
