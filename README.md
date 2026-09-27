@@ -98,6 +98,7 @@ the harness does not care.
 
 ```bash
 run.py status                        # runs done, runs pending, shards pending
+run.py status --slurm                # and what a cluster sweep would request
 run.py sweep --num-workers 6         # across 6 local worker processes
 run.py sweep --num-workers 6 --slurm # the same work as a SLURM array
 run.py sweep --parallel-shards 4     # each worker runs 4 shards at once
@@ -193,6 +194,10 @@ and a venv that is already up to date runs nothing.
 asks for a GPU. The shards a worker runs in parallel (`parallel_shards`) then
 share the GPU through it and run their kernels at the same time, instead of
 taking turns. Each job gets its own server, which stops when the job ends.
+
+`run.py status --slurm` also prints the venv, MPS use and sbatch flags an
+experiment's jobs would get. It reads only `cluster.toml`, so it needs neither
+a clean tree nor the cluster.
 
 `EXPERIMENT_LOCAL_MODE=1` runs every "remote" command in a local shell,
 which is how the cluster flow is exercised without a cluster.
