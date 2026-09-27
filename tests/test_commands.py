@@ -300,6 +300,48 @@ def test_status_says_nothing_about_workers_when_finished(experiment, capsys):
     assert "num-workers" not in capsys.readouterr().out
 
 
+def slurm_status(experiment, tmp_path, capsys, toml: str) -> str:
+    config = tmp_path / "cluster.toml"
+    config.write_text(toml)
+    run(experiment, refuse, ["status", "--slurm", "--slurm-config", str(config)])
+    return capsys.readouterr().out.strip().splitlines()[-1]
+
+
+def test_status_with_slurm_reports_what_a_dispatch_would_request(
+    experiment, tmp_path, capsys
+):
+    resources = slurm_status(experiment, tmp_path, capsys, (
+        '[cluster]\naccount = "def-a"\n'
+        '[slurm]\ntime = "1:00:00"\nmem_per_cpu = "4G"\n'
+        '[experiments.toy]\ntime = "9:00:00"\ngpus = 1\nmps = true\n'
+    ))
+
+    assert resources == (
+        "[toy] gpu venv, mps: --account=def-a --time=9:00:00 "
+        "--mem-per-cpu=4G --gpus-per-node=1"
+    )
+
+
+def test_status_with_slurm_reports_no_mps_for_a_cpu_job(
+    experiment, tmp_path, capsys
+):
+    resources = slurm_status(experiment, tmp_path, capsys, (
+        '[cluster]\naccount = "def-a"\n[slurm]\nmps = true\n'
+    ))
+
+    assert resources == "[toy] cpu venv: --account=def-a"
+
+
+def test_status_with_slurm_needs_an_account(experiment, tmp_path, capsys):
+    with pytest.raises(SystemExit, match="no Slurm account"):
+        slurm_status(experiment, tmp_path, capsys, '[slurm]\ntime = "1:00:00"\n')
+
+
+def test_status_without_slurm_reports_no_resources(experiment, capsys):
+    run(experiment, refuse, ["status"])
+    assert "venv" not in capsys.readouterr().out
+
+
 # --- delete -------------------------------------------------------------------
 
 

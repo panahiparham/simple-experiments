@@ -67,6 +67,7 @@ __all__ = [
     "push",
     "wipe",
     "is_queued",
+    "report_resources",
     "status",
     "logs",
     "setup",
@@ -372,6 +373,11 @@ _START_MPS = (
 )
 
 
+def _uses_mps(resources: dict[str, Any]) -> bool:
+    """Whether a job starts an MPS server, which only a GPU job can use."""
+    return bool(resources.get("mps")) and int(resources.get("gpus", 0)) > 0
+
+
 def _job_command(
     rundir: str, run_py_rel: str, venv: str, mode: str, argv: list[str],
     src_dirs: list[str],
@@ -391,9 +397,9 @@ def _job_command(
 def resource_flags(resources: dict) -> list[str]:
     """Build the sbatch flags a job actually gets.
 
-    Public so ``plan --slurm`` reports what would be requested rather than the
-    merged table, which can mislead: an experiment overriding ``mem`` leaves the
-    default ``mem_per_cpu`` sitting in the table unused.
+    The resources report shows these rather than the merged table, which can
+    mislead: an experiment overriding ``mem`` leaves the default ``mem_per_cpu``
+    sitting in the table unused.
 
     Args:
         resources: The job's merged resource table.
@@ -416,20 +422,22 @@ def resource_flags(resources: dict) -> list[str]:
     return flags
 
 
-def _sbatch_argv(
-    cfg: ClusterConfig, resources: dict, *extra: str, wrap: str
-) -> list[str]:
-    """One sbatch command line. ``--parsable`` prints the job id and nothing else."""
+def _sbatch_flags(cfg: ClusterConfig, resources: dict[str, Any]) -> list[str]:
+    """The account and resource flags a job is submitted with."""
     account = resources.get("account", cfg.account)
     if not account:
         raise SystemExit(
             f"no Slurm account set in {cfg.path} - setup_cluster.py reports the "
             "candidates it finds on the cluster"
         )
-    argv = [
-        "sbatch", "--parsable", f"--account={account}",
-        *resource_flags(resources),
-    ]
+    return [f"--account={account}", *resource_flags(resources)]
+
+
+def _sbatch_argv(
+    cfg: ClusterConfig, resources: dict, *extra: str, wrap: str
+) -> list[str]:
+    """One sbatch command line. ``--parsable`` prints the job id and nothing else."""
+    argv = ["sbatch", "--parsable", *_sbatch_flags(cfg, resources)]
     return [*argv, *extra, "--wrap", wrap]
 
 
@@ -537,8 +545,7 @@ def dispatch(
     if not venv_path:
         raise SystemExit("build_env.sh did not report a venv")
 
-    uses_mps = bool(resources.get("mps")) and int(resources.get("gpus", 0)) > 0
-    start_mps = _START_MPS if uses_mps else ""
+    start_mps = _START_MPS if _uses_mps(resources) else ""
     if mode == "sweep":
         workers, rest = _num_workers(argv)
         plan_file = f"{rundir}/plan.pickle"
@@ -756,6 +763,20 @@ def is_queued(*, label: str, config_path: str | Path | None = None) -> bool:
     queued = _ssh(cfg, f"squeue -j {shlex.quote(ids)} -h 2>/dev/null || true",
                  check=False)
     return bool(queued.strip())
+
+
+def report_resources(*, label: str, config_path: str | Path | None = None) -> None:
+    """Report what this experiment's jobs would request, without the cluster.
+
+    Args:
+        label: The experiment name.
+        config_path: The ``cluster.toml`` to read, defaulting to the repo root's.
+    """
+    cfg = load_config(config_path)
+    resources = resources_for(cfg, label)
+    mps = ", mps" if _uses_mps(resources) else ""
+    flags = " ".join(_sbatch_flags(cfg, resources))
+    print(f"[{label}] {venv_name(resources)} venv{mps}: {flags}")
 
 
 def status(*, label: str, config_path: str | Path | None = None) -> None:
