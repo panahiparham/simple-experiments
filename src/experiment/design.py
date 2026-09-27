@@ -7,9 +7,8 @@ a sweep over it, and the seeds to run each point at - and owns its own table in
 the experiment's database, so components that vary in ways a sweep cannot express
 are collected and analysed separately.
 
-An experiment's name is also the section a cluster config looks up for its
-resources, so it is stable and identifier-like, as is a component's name: both
-become filenames and SQL identifiers.
+An experiment's name is stable and identifier-like, as is a component's name:
+both become filenames and SQL identifiers.
 """
 
 from __future__ import annotations
@@ -105,8 +104,7 @@ class Experiment:
     """A named set of components and the directory their results live in.
 
     Attributes:
-        name: Identifies the experiment. Names its database, and the section a
-            cluster config looks up for this experiment's resources.
+        name: Identifies the experiment, and names its database.
         components: The components making up the experiment, in the order they
             are run.
         results_dir: The directory holding the experiment's database.

@@ -54,6 +54,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from experiment.design import Experiment
+
 __all__ = [
     "ClusterConfig",
     "DEFAULT_CONFIG_PATH",
@@ -92,7 +94,6 @@ class ClusterConfig:
     post_sync: str
     venvs: dict[str, list[str]]
     slurm: dict[str, Any]
-    experiments: dict[str, dict]
     path: Path
 
 
@@ -142,22 +143,21 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
         post_sync=data.get("project", {}).get("post_sync", ""),
         venvs=data.get("venvs", {}),
         slurm=data.get("slurm", {}),
-        experiments=data.get("experiments", {}),
         path=path,
     )
 
 
-def resources_for(cfg: ClusterConfig, label: str) -> dict:
+def resources_for(cfg: ClusterConfig, experiment: Experiment) -> dict[str, Any]:
     """Merge an experiment's resource overrides onto the defaults.
 
     Args:
         cfg: The parsed cluster configuration.
-        label: The experiment name, keying ``[experiments.<label>]``.
+        experiment: The experiment whose ``slurm`` overrides apply.
 
     Returns:
         The ``[slurm]`` defaults with that experiment's overrides on top.
     """
-    return {**cfg.slurm, **cfg.experiments.get(label, {})}
+    return {**cfg.slurm, **experiment.slurm}
 
 
 def venv_name(resources: dict) -> str:
@@ -483,7 +483,7 @@ def _num_workers(argv: list[str]) -> tuple[int, list[str]]:
 
 def dispatch(
     *,
-    label: str,
+    experiment: Experiment,
     run_py: Path,
     mode: str,
     argv: list[str],
@@ -497,7 +497,7 @@ def dispatch(
     becomes a single job.
 
     Args:
-        label: The experiment name.
+        experiment: The experiment to dispatch.
         run_py: The experiment's ``run.py``.
         mode: Either ``sweep`` or ``single``.
         argv: Arguments passed through to the remote ``run.py``.
@@ -508,11 +508,12 @@ def dispatch(
         SystemExit: If the working tree is dirty, or ``sweep`` is missing
             ``--num-workers``.
     """
+    label = experiment.name
     cfg = load_config(config_path)
     if mode not in ("sweep", "single"):
         raise SystemExit(f"[{label}] mode {mode!r} cannot be dispatched to the cluster")
 
-    resources = resources_for(cfg, label)
+    resources = resources_for(cfg, experiment)
     venv = venv_name(resources)
     sha = _require_clean_tree()
     runid = f"{label}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{sha[:7]}"
@@ -765,18 +766,20 @@ def is_queued(*, label: str, config_path: str | Path | None = None) -> bool:
     return bool(queued.strip())
 
 
-def report_resources(*, label: str, config_path: str | Path | None = None) -> None:
+def report_resources(
+    experiment: Experiment, *, config_path: str | Path | None = None
+) -> None:
     """Report what this experiment's jobs would request, without the cluster.
 
     Args:
-        label: The experiment name.
+        experiment: The experiment to report on.
         config_path: The ``cluster.toml`` to read, defaulting to the repo root's.
     """
     cfg = load_config(config_path)
-    resources = resources_for(cfg, label)
+    resources = resources_for(cfg, experiment)
     mps = ", mps" if _uses_mps(resources) else ""
     flags = " ".join(_sbatch_flags(cfg, resources))
-    print(f"[{label}] {venv_name(resources)} venv{mps}: {flags}")
+    print(f"[{experiment.name}] {venv_name(resources)} venv{mps}: {flags}")
 
 
 def status(*, label: str, config_path: str | Path | None = None) -> None:

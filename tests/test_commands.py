@@ -21,7 +21,7 @@ import pytest
 
 import experiment as experiment_package
 from experiment.commands import parse_overrides, run
-from experiment.design import Component, Experiment
+from experiment.design import Component, Experiment, SlurmResources
 from experiment.plan import Phase, Shard
 from experiment.results import completed, load_runs
 
@@ -310,10 +310,13 @@ def slurm_status(experiment, tmp_path, capsys, toml: str) -> str:
 def test_status_with_slurm_reports_what_a_dispatch_would_request(
     experiment, tmp_path, capsys
 ):
+    experiment = dataclasses.replace(
+        experiment, slurm=SlurmResources(time="9:00:00", gpus=1, mps=True)
+    )
+
     resources = slurm_status(experiment, tmp_path, capsys, (
         '[cluster]\naccount = "def-a"\n'
         '[slurm]\ntime = "1:00:00"\nmem_per_cpu = "4G"\n'
-        '[experiments.toy]\ntime = "9:00:00"\ngpus = 1\nmps = true\n'
     ))
 
     assert resources == (

@@ -437,7 +437,7 @@ def _status(experiment: Experiment, cluster: _Cluster, argv: list[str]) -> None:
     print(summary)
 
     if cluster.enabled:
-        slurm.report_resources(label=experiment.name, config_path=cluster.config)
+        slurm.report_resources(experiment, config_path=cluster.config)
 
 
 def _migrate(experiment: Experiment, argv: list[str]) -> None:
@@ -567,7 +567,7 @@ def run(
                 f"[{experiment.name}] {mode} runs here, not on the cluster"
             )
         slurm.dispatch(
-            label=experiment.name,
+            experiment=experiment,
             run_py=Path(sys.argv[0]).resolve(),
             mode=mode,
             argv=rest,
