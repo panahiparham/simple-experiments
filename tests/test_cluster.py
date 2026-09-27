@@ -156,6 +156,13 @@ def test_src_dirs_default_to_src(tmp_path):
     assert slurm.load_config(path).src_dirs == ["src"]
 
 
+def test_an_unknown_slurm_key_is_rejected(tmp_path):
+    path = write_config(tmp_path, '[slurm]\ntme = "0:10:00"\n')
+
+    with pytest.raises(SystemExit, match=r"unknown \[slurm\] key\(s\) \['tme'\]"):
+        slurm.load_config(path)
+
+
 def test_an_experiment_override_lands_on_top_of_the_defaults(tmp_path):
     path = write_config(
         tmp_path,

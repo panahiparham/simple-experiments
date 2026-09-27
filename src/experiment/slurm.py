@@ -50,11 +50,12 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from experiment.design import Experiment
+from experiment.design import Experiment, SlurmResources
 
 __all__ = [
     "ClusterConfig",
@@ -114,6 +115,16 @@ def repo_root() -> Path:
     )
 
 
+def _reject_unknown(
+    names: Iterable[str], known: frozenset[str], what: str, path: Path
+) -> None:
+    unknown = sorted(set(names) - known)
+    if unknown:
+        raise SystemExit(
+            f"{path}: unknown {what} {unknown}; expected any of {sorted(known)}"
+        )
+
+
 def load_config(path: str | Path | None = None) -> ClusterConfig:
     """Read the cluster/slurm configuration.
 
@@ -124,7 +135,8 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
         The parsed configuration.
 
     Raises:
-        SystemExit: If no config exists at ``path``.
+        SystemExit: If no config exists at ``path``, or it sets an unknown
+            ``[slurm]`` key.
     """
     path = repo_root() / DEFAULT_CONFIG_PATH if path is None else Path(path)
     if not path.is_file():
@@ -132,6 +144,8 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
             f"no cluster config at {path} (see cluster.toml in the repo root)"
         )
     data = tomllib.loads(path.read_text())
+    slurm = data.get("slurm", {})
+    _reject_unknown(slurm, SlurmResources.__optional_keys__, "[slurm] key(s)", path)
     cluster = data.get("cluster", {})
     root = cluster.get("root", "")
     return ClusterConfig(
@@ -142,7 +156,7 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
         src_dirs=data.get("project", {}).get("src_dirs", ["src"]),
         post_sync=data.get("project", {}).get("post_sync", ""),
         venvs=data.get("venvs", {}),
-        slurm=data.get("slurm", {}),
+        slurm=slurm,
         path=path,
     )
 
