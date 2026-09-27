@@ -175,8 +175,8 @@ EXPERIMENT = Experiment(
 ```
 
 Both take the same keys: `time`, `cpus_per_task`, `mem`, `mem_per_cpu`,
-`gpus`, `mps` and `account`. An unknown key in `[slurm]`, or an unknown
-table in `cluster.toml`, is an error.
+`gpus`, `mps` and `account`. An unknown key in either, or an unknown table
+in `cluster.toml`, is an error.
 
 ```python
 # setup_cluster.py

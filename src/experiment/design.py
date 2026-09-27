@@ -131,6 +131,13 @@ class Experiment:
                 f"experiment {self.name!r} defines component(s) {duplicated} "
                 "more than once; each component needs its own name"
             )
+        known = SlurmResources.__optional_keys__
+        unknown = sorted(self.slurm.keys() - known)
+        if unknown:
+            raise ValueError(
+                f"experiment {self.name!r} sets unknown slurm key(s) {unknown}; "
+                f"expected any of {sorted(known)}"
+            )
 
     def component(self, name: str) -> Component:
         """Look up one of the experiment's components by name.
