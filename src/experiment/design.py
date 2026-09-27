@@ -7,9 +7,8 @@ a sweep over it, and the seeds to run each point at - and owns its own table in
 the experiment's database, so components that vary in ways a sweep cannot express
 are collected and analysed separately.
 
-An experiment's name is also the section a cluster config looks up for its
-resources, so it is stable and identifier-like, as is a component's name: both
-become filenames and SQL identifiers.
+An experiment's name is stable and identifier-like, as is a component's name:
+both become filenames and SQL identifiers.
 """
 
 from __future__ import annotations
@@ -18,9 +17,21 @@ import dataclasses
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
-__all__ = ["Component", "Experiment"]
+__all__ = ["Component", "Experiment", "SlurmResources"]
+
+
+class SlurmResources(TypedDict, total=False):
+    """Slurm resources: the ``[slurm]`` defaults, or an experiment's overrides."""
+
+    time: str
+    cpus_per_task: int
+    mem: str
+    mem_per_cpu: str
+    gpus: int
+    mps: bool
+    account: str
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -93,21 +104,24 @@ class Experiment:
     """A named set of components and the directory their results live in.
 
     Attributes:
-        name: Identifies the experiment. Names its database, and the section a
-            cluster config looks up for this experiment's resources.
+        name: Identifies the experiment, and names its database.
         components: The components making up the experiment, in the order they
             are run.
         results_dir: The directory holding the experiment's database.
+        slurm: The resources this experiment's jobs ask for on top of the
+            cluster config's ``[slurm]`` defaults.
     """
 
     name: str
     components: Sequence[Component]
     results_dir: Path
+    slurm: SlurmResources = dataclasses.field(default_factory=SlurmResources)
 
     def __post_init__(self) -> None:
         _require_identifier(self.name, "experiment")
         object.__setattr__(self, "components", tuple(self.components))
         object.__setattr__(self, "results_dir", Path(self.results_dir))
+        object.__setattr__(self, "slurm", SlurmResources(**self.slurm))
         if not self.components:
             raise ValueError(f"experiment {self.name!r} defines no components")
         names = [c.name for c in self.components]

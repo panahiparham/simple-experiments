@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from experiment import slurm
-from experiment.design import Component, Experiment
+from experiment.design import Component, Experiment, SlurmResources
 
 
 @pytest.fixture(autouse=True)
@@ -85,7 +85,7 @@ def cluster(repo, monkeypatch):
 
 def dispatch_single(repo: Path) -> None:
     slurm.dispatch(
-        label="toy",
+        experiment=experiment_at(repo / "results"),
         run_py=repo / "run.py",
         mode="single",
         argv=["--seed", "0"],
@@ -95,7 +95,7 @@ def dispatch_single(repo: Path) -> None:
 
 def dispatch_sweep(repo: Path, workers: int) -> None:
     slurm.dispatch(
-        label="toy",
+        experiment=experiment_at(repo / "results"),
         run_py=repo / "run.py",
         mode="sweep",
         argv=["--num-workers", str(workers)],
@@ -126,11 +126,14 @@ def jobs_starting_mps(out: str) -> list[str]:
     ]
 
 
-def experiment_at(results_dir: Path) -> Experiment:
+def experiment_at(
+    results_dir: Path, slurm: SlurmResources | None = None
+) -> Experiment:
     return Experiment(
         name="toy",
         components=[Component(name="a", config=None, seeds=[0])],
         results_dir=results_dir,
+        slurm=slurm or SlurmResources(),
     )
 
 
@@ -153,25 +156,36 @@ def test_src_dirs_default_to_src(tmp_path):
     assert slurm.load_config(path).src_dirs == ["src"]
 
 
+def test_an_unknown_slurm_key_is_rejected(tmp_path):
+    path = write_config(tmp_path, '[slurm]\ntme = "0:10:00"\n')
+
+    with pytest.raises(SystemExit, match=r"unknown \[slurm\] key\(s\) \['tme'\]"):
+        slurm.load_config(path)
+
+
+def test_a_leftover_experiments_table_is_rejected(tmp_path):
+    path = write_config(tmp_path, '[experiments.toy]\ntime = "8:00:00"\n')
+
+    with pytest.raises(SystemExit, match=r"unknown table\(s\) \['experiments'\]"):
+        slurm.load_config(path)
+
+
 def test_an_experiment_override_lands_on_top_of_the_defaults(tmp_path):
     path = write_config(
         tmp_path,
-        '[slurm]\ntime = "0:10:00"\ncpus_per_task = 2\n'
-        '\n[experiments.toy]\ntime = "8:00:00"\n',
+        '[slurm]\ntime = "0:10:00"\ncpus_per_task = 2\n',
     )
+    experiment = experiment_at(tmp_path, SlurmResources(time="8:00:00"))
 
-    resources = slurm.resources_for(slurm.load_config(path), "toy")
+    resources = slurm.resources_for(slurm.load_config(path), experiment)
 
     assert resources == {"time": "8:00:00", "cpus_per_task": 2}
 
 
 def test_an_experiment_with_no_overrides_gets_the_defaults(tmp_path):
-    path = write_config(
-        tmp_path,
-        '[slurm]\ntime = "0:10:00"\n\n[experiments.toy]\ntime = "8:00:00"\n',
-    )
+    path = write_config(tmp_path, '[slurm]\ntime = "0:10:00"\n')
 
-    resources = slurm.resources_for(slurm.load_config(path), "other")
+    resources = slurm.resources_for(slurm.load_config(path), experiment_at(tmp_path))
 
     assert resources == {"time": "0:10:00"}
 

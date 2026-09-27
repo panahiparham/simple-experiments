@@ -50,9 +50,12 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from experiment.design import Experiment, SlurmResources
 
 __all__ = [
     "ClusterConfig",
@@ -74,6 +77,7 @@ __all__ = [
 ]
 
 DEFAULT_CONFIG_PATH = "cluster.toml"
+_TABLES = frozenset({"project", "cluster", "venvs", "slurm"})
 
 # A configured root may contain a literal $HOME for the cluster's shell to expand.
 # Expanding it costs an ssh round trip, so cache per (host, root) for this process.
@@ -92,7 +96,6 @@ class ClusterConfig:
     post_sync: str
     venvs: dict[str, list[str]]
     slurm: dict[str, Any]
-    experiments: dict[str, dict]
     path: Path
 
 
@@ -113,6 +116,16 @@ def repo_root() -> Path:
     )
 
 
+def _reject_unknown(
+    names: Iterable[str], known: frozenset[str], what: str, path: Path
+) -> None:
+    unknown = sorted(set(names) - known)
+    if unknown:
+        raise SystemExit(
+            f"{path}: unknown {what} {unknown}; expected any of {sorted(known)}"
+        )
+
+
 def load_config(path: str | Path | None = None) -> ClusterConfig:
     """Read the cluster/slurm configuration.
 
@@ -123,7 +136,8 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
         The parsed configuration.
 
     Raises:
-        SystemExit: If no config exists at ``path``.
+        SystemExit: If no config exists at ``path``, or it has an unknown table
+            or ``[slurm]`` key.
     """
     path = repo_root() / DEFAULT_CONFIG_PATH if path is None else Path(path)
     if not path.is_file():
@@ -131,6 +145,9 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
             f"no cluster config at {path} (see cluster.toml in the repo root)"
         )
     data = tomllib.loads(path.read_text())
+    _reject_unknown(data, _TABLES, "table(s)", path)
+    slurm = data.get("slurm", {})
+    _reject_unknown(slurm, SlurmResources.__optional_keys__, "[slurm] key(s)", path)
     cluster = data.get("cluster", {})
     root = cluster.get("root", "")
     return ClusterConfig(
@@ -141,23 +158,22 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
         src_dirs=data.get("project", {}).get("src_dirs", ["src"]),
         post_sync=data.get("project", {}).get("post_sync", ""),
         venvs=data.get("venvs", {}),
-        slurm=data.get("slurm", {}),
-        experiments=data.get("experiments", {}),
+        slurm=slurm,
         path=path,
     )
 
 
-def resources_for(cfg: ClusterConfig, label: str) -> dict:
+def resources_for(cfg: ClusterConfig, experiment: Experiment) -> dict[str, Any]:
     """Merge an experiment's resource overrides onto the defaults.
 
     Args:
         cfg: The parsed cluster configuration.
-        label: The experiment name, keying ``[experiments.<label>]``.
+        experiment: The experiment whose ``slurm`` overrides apply.
 
     Returns:
         The ``[slurm]`` defaults with that experiment's overrides on top.
     """
-    return {**cfg.slurm, **cfg.experiments.get(label, {})}
+    return {**cfg.slurm, **experiment.slurm}
 
 
 def venv_name(resources: dict) -> str:
@@ -483,7 +499,7 @@ def _num_workers(argv: list[str]) -> tuple[int, list[str]]:
 
 def dispatch(
     *,
-    label: str,
+    experiment: Experiment,
     run_py: Path,
     mode: str,
     argv: list[str],
@@ -497,7 +513,7 @@ def dispatch(
     becomes a single job.
 
     Args:
-        label: The experiment name.
+        experiment: The experiment to dispatch.
         run_py: The experiment's ``run.py``.
         mode: Either ``sweep`` or ``single``.
         argv: Arguments passed through to the remote ``run.py``.
@@ -508,11 +524,12 @@ def dispatch(
         SystemExit: If the working tree is dirty, or ``sweep`` is missing
             ``--num-workers``.
     """
+    label = experiment.name
     cfg = load_config(config_path)
     if mode not in ("sweep", "single"):
         raise SystemExit(f"[{label}] mode {mode!r} cannot be dispatched to the cluster")
 
-    resources = resources_for(cfg, label)
+    resources = resources_for(cfg, experiment)
     venv = venv_name(resources)
     sha = _require_clean_tree()
     runid = f"{label}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{sha[:7]}"
@@ -765,18 +782,20 @@ def is_queued(*, label: str, config_path: str | Path | None = None) -> bool:
     return bool(queued.strip())
 
 
-def report_resources(*, label: str, config_path: str | Path | None = None) -> None:
+def report_resources(
+    experiment: Experiment, *, config_path: str | Path | None = None
+) -> None:
     """Report what this experiment's jobs would request, without the cluster.
 
     Args:
-        label: The experiment name.
+        experiment: The experiment to report on.
         config_path: The ``cluster.toml`` to read, defaulting to the repo root's.
     """
     cfg = load_config(config_path)
-    resources = resources_for(cfg, label)
+    resources = resources_for(cfg, experiment)
     mps = ", mps" if _uses_mps(resources) else ""
     flags = " ".join(_sbatch_flags(cfg, resources))
-    print(f"[{label}] {venv_name(resources)} venv{mps}: {flags}")
+    print(f"[{experiment.name}] {venv_name(resources)} venv{mps}: {flags}")
 
 
 def status(*, label: str, config_path: str | Path | None = None) -> None:

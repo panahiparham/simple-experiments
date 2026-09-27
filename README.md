@@ -155,17 +155,28 @@ account = "my-slurm-account"
 cpu = []
 gpu = ["cuda"]
 
-[slurm]
+[slurm]                              # defaults for every experiment's jobs
 time = "01:00:00"
 cpus_per_task = 1
 mem_per_cpu = "4G"
 gpus = 0
-
-[experiments.quadratic_descent]      # per-experiment overrides, keyed by
-time = "00:30:00"                    # the Experiment's name
-gpus = 1
-mps = true                           # optional, share the GPU through CUDA MPS
 ```
+
+An experiment overrides any of those defaults for its own jobs:
+
+```python
+from experiment import SlurmResources
+
+EXPERIMENT = Experiment(
+    name="quadratic_descent",
+    ...,
+    slurm=SlurmResources(time="00:30:00", gpus=1, mps=True),
+)
+```
+
+Both take the same keys: `time`, `cpus_per_task`, `mem`, `mem_per_cpu`,
+`gpus`, `mps` and `account`. An unknown key in `[slurm]`, or an unknown
+table in `cluster.toml`, is an error.
 
 ```python
 # setup_cluster.py
@@ -190,7 +201,7 @@ with, so one script can serve several venvs. What the script contains counts
 towards the venv's identity, so editing it rebuilds the venvs it applies to,
 and a venv that is already up to date runs nothing.
 
-`mps = true` starts a CUDA MPS server at the beginning of every job that
+`mps` starts a CUDA MPS server at the beginning of every job that
 asks for a GPU. The shards a worker runs in parallel (`parallel_shards`) then
 share the GPU through it and run their kernels at the same time, instead of
 taking turns. Each job gets its own server, which stops when the job ends.
