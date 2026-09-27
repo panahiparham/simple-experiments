@@ -110,16 +110,20 @@ class Experiment:
         components: The components making up the experiment, in the order they
             are run.
         results_dir: The directory holding the experiment's database.
+        slurm: The resources this experiment's jobs ask for on top of the
+            cluster config's ``[slurm]`` defaults.
     """
 
     name: str
     components: Sequence[Component]
     results_dir: Path
+    slurm: SlurmResources = dataclasses.field(default_factory=SlurmResources)
 
     def __post_init__(self) -> None:
         _require_identifier(self.name, "experiment")
         object.__setattr__(self, "components", tuple(self.components))
         object.__setattr__(self, "results_dir", Path(self.results_dir))
+        object.__setattr__(self, "slurm", SlurmResources(**self.slurm))
         if not self.components:
             raise ValueError(f"experiment {self.name!r} defines no components")
         names = [c.name for c in self.components]
