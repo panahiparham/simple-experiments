@@ -416,20 +416,22 @@ def resource_flags(resources: dict) -> list[str]:
     return flags
 
 
-def _sbatch_argv(
-    cfg: ClusterConfig, resources: dict, *extra: str, wrap: str
-) -> list[str]:
-    """One sbatch command line. ``--parsable`` prints the job id and nothing else."""
+def _sbatch_flags(cfg: ClusterConfig, resources: dict[str, Any]) -> list[str]:
+    """The account and resource flags a job is submitted with."""
     account = resources.get("account", cfg.account)
     if not account:
         raise SystemExit(
             f"no Slurm account set in {cfg.path} - setup_cluster.py reports the "
             "candidates it finds on the cluster"
         )
-    argv = [
-        "sbatch", "--parsable", f"--account={account}",
-        *resource_flags(resources),
-    ]
+    return [f"--account={account}", *resource_flags(resources)]
+
+
+def _sbatch_argv(
+    cfg: ClusterConfig, resources: dict, *extra: str, wrap: str
+) -> list[str]:
+    """One sbatch command line. ``--parsable`` prints the job id and nothing else."""
+    argv = ["sbatch", "--parsable", *_sbatch_flags(cfg, resources)]
     return [*argv, *extra, "--wrap", wrap]
 
 
