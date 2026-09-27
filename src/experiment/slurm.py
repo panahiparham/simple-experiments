@@ -372,6 +372,11 @@ _START_MPS = (
 )
 
 
+def _uses_mps(resources: dict[str, Any]) -> bool:
+    """Whether a job starts an MPS server, which only a GPU job can use."""
+    return bool(resources.get("mps")) and int(resources.get("gpus", 0)) > 0
+
+
 def _job_command(
     rundir: str, run_py_rel: str, venv: str, mode: str, argv: list[str],
     src_dirs: list[str],
@@ -539,8 +544,7 @@ def dispatch(
     if not venv_path:
         raise SystemExit("build_env.sh did not report a venv")
 
-    uses_mps = bool(resources.get("mps")) and int(resources.get("gpus", 0)) > 0
-    start_mps = _START_MPS if uses_mps else ""
+    start_mps = _START_MPS if _uses_mps(resources) else ""
     if mode == "sweep":
         workers, rest = _num_workers(argv)
         plan_file = f"{rundir}/plan.pickle"
