@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 import experiment as experiment_package
-from experiment.commands import parse_overrides, run
+from experiment.commands import _split_cluster_flags, parse_overrides, run
 from experiment.design import Component, Experiment, SlurmResources
 from experiment.plan import Phase, Shard
 from experiment.results import completed, load_runs
@@ -89,6 +89,32 @@ def test_a_malformed_assignment_is_rejected(bad):
 @pytest.mark.parametrize("argv", [[], ["bogus"]])
 def test_a_mode_is_required(experiment, argv):
     with pytest.raises(SystemExit, match="mode is required"):
+        run(experiment, refuse, argv)
+
+
+def test_wip_is_taken_out_of_a_modes_arguments():
+    rest, cluster = _split_cluster_flags(["single", "--wip", "--slurm", "--seed", "0"])
+
+    assert rest == ["single", "--seed", "0"]
+    assert cluster.wip
+
+
+def test_a_dispatch_is_not_wip_by_default():
+    _, cluster = _split_cluster_flags(["single", "--slurm"])
+
+    assert not cluster.wip
+
+
+@pytest.mark.parametrize("argv", [
+    ["single", "--wip"],
+    ["sweep", "--wip"],
+    ["status", "--slurm", "--wip"],
+    ["sync", "--wip"],
+    ["queue", "--slurm", "--wip"],
+    ["logs", "--wip"],
+])
+def test_wip_is_refused_where_it_would_do_nothing(experiment, argv):
+    with pytest.raises(SystemExit, match="--wip only applies"):
         run(experiment, refuse, argv)
 
 

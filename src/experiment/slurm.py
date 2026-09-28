@@ -4,7 +4,8 @@ entirely from a laptop.
 Nothing is maintained on the cluster by hand. A *bare* repo there is the push target;
 each dispatch snapshots exactly one commit into its own run dir (``git archive``, so no
 index and no working checkout), and a queued job's code can never be swapped underneath
-it. Only committed work is ever submitted, so a run maps to one sha.
+it. A run maps to one sha: HEAD, or a snapshot commit of the working tree for a wip
+dispatch.
 
 Two shared venvs, ``cpu`` and ``gpu``, serve every commit. They are *deps-only*
 (``uv sync --no-install-workspace``): installing the project - or this harness,
@@ -294,6 +295,28 @@ def _require_clean_tree() -> str:
     return proc.stdout.strip()
 
 
+def _snapshot_worktree() -> str:
+    """A commit of the working tree as it stands, untracked files included.
+
+    It is built in a scratch index, so the user's index, branches and files are left
+    as they are. A tree with nothing to add snapshots as HEAD itself.
+    """
+    repo = repo_root()
+    head = _run(["git", "rev-parse", "HEAD"], cwd=repo, check=True).stdout.strip()
+    with tempfile.TemporaryDirectory() as scratch:
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "index")}
+        _run(["git", "add", "-A"], cwd=repo, env=env, check=True)
+        tree = _run(["git", "write-tree"], cwd=repo, env=env, check=True)
+    tree_sha = tree.stdout.strip()
+    head_tree = _run(["git", "rev-parse", "HEAD^{tree}"], cwd=repo, check=True)
+    if tree_sha == head_tree.stdout.strip():
+        return head
+    message = f"wip snapshot of {head[:7]}"
+    commit = _run(["git", "commit-tree", tree_sha, "-p", head, "-m", message],
+                  cwd=repo, check=True)
+    return commit.stdout.strip()
+
+
 def _remote_name(cfg: ClusterConfig) -> str:
     return f"cluster-{cfg.host}"
 
@@ -505,6 +528,7 @@ def dispatch(
     argv: list[str],
     config_path: str | Path | None = None,
     dry_run: bool = False,
+    wip: bool = False,
 ) -> None:
     """Run one of this experiment's modes on the cluster instead of here.
 
@@ -519,10 +543,12 @@ def dispatch(
         argv: Arguments passed through to the remote ``run.py``.
         config_path: The ``cluster.toml`` to read, defaulting to the repo root's.
         dry_run: Build and report the jobs without submitting them.
+        wip: Run the working tree as it stands, uncommitted and untracked files
+            included, instead of requiring it to be clean.
 
     Raises:
-        SystemExit: If the working tree is dirty, or ``sweep`` is missing
-            ``--num-workers``.
+        SystemExit: If the working tree is dirty without ``wip``, or ``sweep`` is
+            missing ``--num-workers``.
     """
     label = experiment.name
     cfg = load_config(config_path)
@@ -531,8 +557,10 @@ def dispatch(
 
     resources = resources_for(cfg, experiment)
     venv = venv_name(resources)
-    sha = _require_clean_tree()
+    sha = _snapshot_worktree() if wip else _require_clean_tree()
     runid = f"{label}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{sha[:7]}"
+    if wip:
+        runid += "-wip"
     repo = repo_root()
     run_py_rel = run_py.resolve().relative_to(repo).as_posix()
     exp_reldir = run_py.resolve().parent.relative_to(repo).as_posix()

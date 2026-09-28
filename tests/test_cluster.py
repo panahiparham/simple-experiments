@@ -446,6 +446,95 @@ def test_a_dry_run_leaves_no_run_directory_behind(cluster, repo):
     assert list((root / "runs").iterdir()) == []
 
 
+def dispatch_wip(repo: Path) -> None:
+    slurm.dispatch(
+        experiment=experiment_at(repo / "results"),
+        run_py=repo / "run.py",
+        mode="single",
+        argv=["--seed", "0"],
+        dry_run=True,
+        wip=True,
+    )
+
+
+def pushed_run(root: Path) -> str:
+    refs = git(root / "toy.git", "for-each-ref", "--format=%(refname)", "refs/gsp/runs")
+    [ref] = refs.stdout.split()
+    return ref
+
+
+def pushed_files(root: Path) -> set[str]:
+    tree = git(root / "toy.git", "ls-tree", "-r", "--name-only", pushed_run(root))
+    return set(tree.stdout.split())
+
+
+def test_a_wip_dispatch_runs_an_uncommitted_edit(cluster, repo):
+    root = cluster()
+    (repo / "run.py").write_text("edited = True\n")
+
+    dispatch_wip(repo)
+
+    pushed = git(root / "toy.git", "show", f"{pushed_run(root)}:run.py")
+    assert pushed.stdout == "edited = True\n"
+
+
+def test_a_wip_dispatch_runs_an_untracked_file(cluster, repo):
+    root = cluster()
+    (repo / "scratch.py").write_text("x = 1\n")
+
+    dispatch_wip(repo)
+
+    assert "scratch.py" in pushed_files(root)
+
+
+def test_a_wip_dispatch_leaves_out_an_ignored_file(cluster, repo):
+    root = cluster()
+    commit_file(repo, ".gitignore", "*.log\n")
+    (repo / "debug.log").write_text("noise\n")
+
+    dispatch_wip(repo)
+
+    assert "debug.log" not in pushed_files(root)
+
+
+def test_a_wip_dispatch_leaves_the_index_and_working_tree_alone(cluster, repo):
+    cluster()
+    (repo / "staged.py").write_text("a = 1\n")
+    git(repo, "add", "staged.py")
+    (repo / "run.py").write_text("edited = True\n")
+    (repo / "scratch.py").write_text("x = 1\n")
+    before = git(repo, "status", "--porcelain").stdout
+
+    dispatch_wip(repo)
+
+    assert git(repo, "status", "--porcelain").stdout == before
+
+
+def test_a_wip_dispatch_of_a_clean_tree_runs_head(cluster, repo):
+    root = cluster()
+    head = git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    dispatch_wip(repo)
+
+    assert git(root / "toy.git", "rev-parse", pushed_run(root)).stdout.strip() == head
+
+
+def test_a_wip_run_is_marked_in_its_runid(cluster, repo):
+    root = cluster()
+
+    dispatch_wip(repo)
+
+    assert pushed_run(root).endswith("-wip")
+
+
+def test_a_dispatch_without_wip_refuses_a_dirty_tree(cluster, repo):
+    cluster()
+    (repo / "scratch.py").write_text("x = 1\n")
+
+    with pytest.raises(SystemExit, match=r"scratch\.py"):
+        dispatch_single(repo)
+
+
 def test_a_sweep_chains_a_plan_an_array_and_a_merge(cluster, repo, capsys):
     cluster()
 
