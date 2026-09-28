@@ -23,13 +23,15 @@ from __future__ import annotations
 import io
 import json
 import sqlite3
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 import polars as pl
 
 from experiment.design import Experiment
+from experiment.hypers import get_path
 from experiment.identity import as_point, config_id
 from experiment.plan import Shard
 
@@ -42,6 +44,7 @@ __all__ = [
     "load_runs",
     "load_result",
     "load_array",
+    "load_arrays",
 ]
 
 
@@ -442,3 +445,43 @@ def load_array(
         The array, or ``None`` if the run has no such array.
     """
     return load_result(experiment, component, run_id).get(name)
+
+
+def load_arrays(
+    experiment: Experiment,
+    component: str,
+    where: Mapping[str, Any] | None = None,
+) -> dict[str, np.ndarray]:
+    """Load the arrays of every matching run, stacked one row per run.
+
+    Args:
+        experiment: The experiment to read.
+        component: The component whose runs to load.
+        where: Dotted config paths and the value a run must have at each, e.g.
+            ``{"ENV_HYPERS.GAME": "pong"}``. ``None`` matches every run.
+
+    Returns:
+        Each named array stacked over the matching runs in seed order, shaped
+        ``[n_runs, ...]``. Empty if no stored run matches.
+
+    Raises:
+        AttributeError: If a ``where`` path names no field of the component's
+            config, even when nothing is stored yet.
+    """
+    where = dict(where or {})
+    config = experiment.component(component).config
+    for path in where:
+        get_path(config, path)
+
+    runs = load_runs(experiment, component)
+    if runs.is_empty():
+        return {}
+    matching = runs.filter(*(pl.col(path) == value for path, value in where.items()))
+    results = [
+        load_result(experiment, component, run_id)
+        for run_id in matching.sort("seed")["run_id"]
+    ]
+    results = [result for result in results if result]
+    if not results:
+        return {}
+    return {name: np.stack([result[name] for result in results]) for name in results[0]}

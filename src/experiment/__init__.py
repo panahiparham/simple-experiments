@@ -22,6 +22,7 @@ from experiment.results import (
     completed,
     database_path,
     load_array,
+    load_arrays,
     load_result,
     load_runs,
     merge_parts,
@@ -45,5 +46,6 @@ __all__ = [
     "load_runs",
     "load_result",
     "load_array",
+    "load_arrays",
     "merge_parts",
 ]
