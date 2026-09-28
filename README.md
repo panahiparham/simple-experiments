@@ -135,6 +135,15 @@ for run_id, lr in zip(df["run_id"], df["OPTIMIZER.LR"]):
 flattened to dotted columns, but not the result itself - that stays a
 binary blob until `load_result` or `load_array` reads one run's back.
 
+`load_arrays` stacks every matching run's arrays, one row per run in seed order:
+
+```python
+from experiment import load_arrays
+
+stacked = load_arrays(EXPERIMENT, "tuned", where={"OPTIMIZER.LR": 0.15})
+stacked["final_x"]  # [n_runs, ...]; {} if no stored run matches
+```
+
 ## Setting up on a cluster
 
 `experiment.slurm` reads a `cluster.toml` from your project's repo root,
