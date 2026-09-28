@@ -294,6 +294,28 @@ def _require_clean_tree() -> str:
     return proc.stdout.strip()
 
 
+def _snapshot_worktree() -> str:
+    """A commit of the working tree as it stands, untracked files included.
+
+    It is built in a scratch index, so the user's index, branches and files are left
+    as they are. A tree with nothing to add snapshots as HEAD itself.
+    """
+    repo = repo_root()
+    head = _run(["git", "rev-parse", "HEAD"], cwd=repo, check=True).stdout.strip()
+    with tempfile.TemporaryDirectory() as scratch:
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "index")}
+        _run(["git", "add", "-A"], cwd=repo, env=env, check=True)
+        tree = _run(["git", "write-tree"], cwd=repo, env=env, check=True)
+    tree_sha = tree.stdout.strip()
+    head_tree = _run(["git", "rev-parse", "HEAD^{tree}"], cwd=repo, check=True)
+    if tree_sha == head_tree.stdout.strip():
+        return head
+    message = f"wip snapshot of {head[:7]}"
+    commit = _run(["git", "commit-tree", tree_sha, "-p", head, "-m", message],
+                  cwd=repo, check=True)
+    return commit.stdout.strip()
+
+
 def _remote_name(cfg: ClusterConfig) -> str:
     return f"cluster-{cfg.host}"
 
