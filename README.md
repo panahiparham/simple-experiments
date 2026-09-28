@@ -193,6 +193,17 @@ when `uv.lock` moves. A cluster sweep runs as three chained jobs: one
 deciding the plan, an array working through it, and one merging what the
 array wrote.
 
+A dispatch requires a clean working tree. `--wip` dispatches the working
+tree as it is instead, including uncommitted and untracked files but not
+ignored ones. It creates a commit on top of HEAD without changing your
+branches, index or files, and the run's id ends in `-wip`:
+
+```bash
+run.py sweep --num-workers 6 --slurm --wip
+```
+
+`--wip` only applies to `single` and `sweep` with `--slurm`.
+
 A project that needs something `uv sync` cannot install can name a script of
 its own with `[project] post_sync`, a path inside the repo. It runs from the
 snapshot once a venv is synced, with `EXPERIMENT_VENV` set to the venv it
