@@ -24,6 +24,7 @@ from experiment.results import (
     database_path,
     delete_runs,
     load_array,
+    load_arrays,
     load_result,
     load_runs,
     merge_parts,
@@ -292,3 +293,85 @@ def test_a_query_with_the_wrong_binding_count_is_not_swallowed(experiment):
     merge_parts(experiment)
     with pytest.raises(sqlite3.ProgrammingError):
         _query_ro(database_path(experiment), 'SELECT * FROM "a" WHERE run_id = ?')
+
+
+# --- stacked arrays ---------------------------------------------------------
+
+
+@pytest.fixture
+def swept(tmp_path) -> Experiment:
+    return Experiment(
+        name="swept",
+        components=[
+            Component(
+                name="a",
+                config=Cfg(),
+                sweep={"HYPERS.LR": [0.1, 0.2]},
+                seeds=[0, 1],
+                shard_size=1,
+            ),
+        ],
+        results_dir=tmp_path,
+    )
+
+
+def save_first_shards(experiment: Experiment, count: int) -> None:
+    """Store only the first ``count`` shards, as an interrupted sweep would."""
+    with ResultWriter(experiment, "0") as writer:
+        for shard in plan_experiment(experiment)[:count]:
+            writer.save(shard, [result(r.seed) for r in shard.runs])
+
+
+def test_an_empty_store_loads_no_arrays(experiment):
+    """Nothing stored yet reads as no arrays rather than an error."""
+    assert load_arrays(experiment, "a") == {}
+
+
+def test_arrays_stack_one_row_per_run_in_seed_order(experiment):
+    """Rows follow seed order, so stacks line up across components."""
+    run_everything(experiment, num_workers=2)
+    merge_parts(experiment)
+    stacked = load_arrays(experiment, "a")
+    assert set(stacked) == {"reward"}
+    assert np.array_equal(stacked["reward"], [result(s)["reward"] for s in range(3)])
+
+
+def test_arrays_load_before_they_are_merged(experiment):
+    """A sweep that has not merged its parts yet is still visible."""
+    run_everything(experiment, num_workers=2)
+    assert load_arrays(experiment, "a")["reward"].shape == (3, 4)
+
+
+def test_a_partial_sweep_loads_only_the_stored_runs(experiment):
+    """Missing runs are left out instead of padded."""
+    save_first_shards(experiment, 1)
+    assert load_arrays(experiment, "a")["reward"].shape == (1, 4)
+
+
+def test_where_selects_runs_by_config_value(swept):
+    """Only runs whose config matches every ``where`` path are stacked."""
+    run_everything(swept)
+    stacked = load_arrays(swept, "a", where={"HYPERS.LR": 0.2})
+    assert stacked["reward"].shape == (2, 4)
+
+
+def test_where_matching_no_run_loads_no_arrays(swept):
+    """A sweep point with no stored runs reads as no arrays."""
+    run_everything(swept)
+    assert load_arrays(swept, "a", where={"HYPERS.LR": 0.3}) == {}
+
+
+def test_an_unknown_where_path_raises_even_with_nothing_stored(swept):
+    """A typo in ``where`` fails loudly instead of reading as missing data."""
+    with pytest.raises(AttributeError, match=r"HYPERS\.RL"):
+        load_arrays(swept, "a", where={"HYPERS.RL": 0.1})
+
+
+def test_runs_that_stored_nothing_are_left_out(experiment):
+    """A run may produce nothing, and then it has no row to contribute."""
+    plan = plan_experiment(experiment)
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(plan[0], [{}])
+        for shard in plan[1:]:
+            writer.save(shard, [result(r.seed) for r in shard.runs])
+    assert load_arrays(experiment, "a")["reward"].shape == (2, 4)
