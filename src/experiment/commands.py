@@ -463,6 +463,7 @@ class _Cluster:
     enabled: bool = False
     dry_run: bool = False
     config: str | None = None
+    wip: bool = False
 
 
 def _split_cluster_flags(argv: list[str]) -> tuple[list[str], _Cluster]:
@@ -475,7 +476,7 @@ def _split_cluster_flags(argv: list[str]) -> tuple[list[str], _Cluster]:
         SystemExit: If ``--slurm-config`` is given without a path.
     """
     rest: list[str] = []
-    enabled = dry_run = False
+    enabled = dry_run = wip = False
     config: str | None = None
     index = 0
     while index < len(argv):
@@ -484,6 +485,8 @@ def _split_cluster_flags(argv: list[str]) -> tuple[list[str], _Cluster]:
             enabled = True
         elif argument == "--slurm-dry-run":
             enabled = dry_run = True  # implies --slurm; passing both is redundant
+        elif argument == "--wip":
+            wip = True
         elif argument == "--slurm-config":
             index += 1
             if index >= len(argv):
@@ -494,7 +497,17 @@ def _split_cluster_flags(argv: list[str]) -> tuple[list[str], _Cluster]:
         else:
             rest.append(argument)
         index += 1
-    return rest, _Cluster(enabled=enabled, dry_run=dry_run, config=config)
+    return rest, _Cluster(enabled=enabled, dry_run=dry_run, config=config, wip=wip)
+
+
+def _require_wip_dispatch(
+    experiment: Experiment, mode: str, cluster: _Cluster
+) -> None:
+    """Refuse ``--wip`` wherever it would have no effect."""
+    if cluster.wip and not (cluster.enabled and mode in ("single", "sweep")):
+        raise SystemExit(
+            f"[{experiment.name}] --wip only applies to single or sweep with --slurm"
+        )
 
 
 def _sync(experiment: Experiment, cluster: _Cluster, argv: list[str]) -> None:
@@ -547,6 +560,7 @@ def run(
         )
 
     mode, rest = argv[0], argv[1:]
+    _require_wip_dispatch(experiment, mode, cluster)
 
     if mode in ("sync", "queue", "logs"):
         if mode == "sync":
@@ -573,6 +587,7 @@ def run(
             argv=rest,
             config_path=cluster.config,
             dry_run=cluster.dry_run,
+            wip=cluster.wip,
         )
         return
 
