@@ -394,6 +394,15 @@ def test_delete_resolves_every_sweep_point_for_a_seed(experiment):
     assert len(completed(experiment)["a"]) == 4
 
 
+def test_delete_removes_every_given_seed(experiment):
+    run(experiment, process, ["sweep", "--component", "a"])
+    run(
+        experiment, refuse,
+        ["delete", "--component", "a", "--seed", "0", "1", "--yes"],
+    )
+    assert set(load_runs(experiment, "a")["seed"]) == {2}
+
+
 def test_delete_by_run_id_bypasses_resolution(experiment):
     run(experiment, process, ["single", "--component", "b", "--seed", "0"])
     run_id = load_runs(experiment, "b")["run_id"][0]
