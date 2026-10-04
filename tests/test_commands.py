@@ -406,9 +406,16 @@ def test_delete_run_id_needs_a_component(experiment):
         run(experiment, refuse, ["delete", "--run-id", "whatever"])
 
 
-def test_delete_needs_component_and_seed_or_run_id(experiment):
-    with pytest.raises(SystemExit, match="needs --component and --seed"):
-        run(experiment, refuse, ["delete", "--component", "b"])
+def test_delete_without_seed_or_run_id_removes_the_whole_component(experiment):
+    run(experiment, process, ["sweep"])
+    run(experiment, refuse, ["delete", "--component", "a", "--yes"])
+    assert completed(experiment)["a"] == set()
+    assert len(completed(experiment)["b"]) == 2
+
+
+def test_delete_needs_a_component(experiment):
+    with pytest.raises(SystemExit, match="needs --component"):
+        run(experiment, refuse, ["delete"])
 
 
 def test_delete_with_no_matches_reports_none(experiment, capsys):

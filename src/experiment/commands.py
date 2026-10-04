@@ -151,20 +151,22 @@ def _delete_targets(
 
     ``--run-id`` bypasses recomputing the component's current runs entirely,
     for a run whose config has since changed and so no longer resolves to the
-    same id.
+    same id. Without ``--seed`` or ``--run-id``, every stored run of the
+    component is targeted, including ones from earlier configs.
 
     Raises:
-        SystemExit: If the given flags don't identify a component, or a
-            component without either ``--seed`` or ``--run-id``.
+        SystemExit: If the given flags don't identify a component.
     """
     if args.run_ids is not None and args.component is None:
         raise SystemExit("--run-id needs --component")
     if args.run_ids is not None:
         return args.component, list(args.run_ids)
 
-    if args.component is None or args.seed is None:
-        raise SystemExit("delete needs --component and --seed, or --run-id")
+    if args.component is None:
+        raise SystemExit("delete needs --component")
     picked = _one_component(experiment, args.component)
+    if args.seed is None:
+        return picked.name, sorted(completed(experiment)[picked.name])
     overrides = parse_overrides(args.overrides)
     targets = [
         run.id for run in component_runs(picked, overrides) if run.seed == args.seed
