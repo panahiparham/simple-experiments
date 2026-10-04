@@ -394,6 +394,15 @@ def test_delete_resolves_every_sweep_point_for_a_seed(experiment):
     assert len(completed(experiment)["a"]) == 4
 
 
+def test_delete_removes_every_given_seed(experiment):
+    run(experiment, process, ["sweep", "--component", "a"])
+    run(
+        experiment, refuse,
+        ["delete", "--component", "a", "--seed", "0", "1", "--yes"],
+    )
+    assert set(load_runs(experiment, "a")["seed"]) == {2}
+
+
 def test_delete_by_run_id_bypasses_resolution(experiment):
     run(experiment, process, ["single", "--component", "b", "--seed", "0"])
     run_id = load_runs(experiment, "b")["run_id"][0]
@@ -401,14 +410,29 @@ def test_delete_by_run_id_bypasses_resolution(experiment):
     assert completed(experiment)["b"] == set()
 
 
+def test_delete_removes_every_given_run_id(experiment):
+    run(experiment, process, ["sweep", "--component", "a"])
+    first, second, *rest = load_runs(experiment, "a")["run_id"]
+    argv = ["delete", "--component", "a", "--run-id", first, second, "--yes"]
+    run(experiment, refuse, argv)
+    assert completed(experiment)["a"] == set(rest)
+
+
 def test_delete_run_id_needs_a_component(experiment):
     with pytest.raises(SystemExit, match="needs --component"):
         run(experiment, refuse, ["delete", "--run-id", "whatever"])
 
 
-def test_delete_needs_component_and_seed_or_run_id(experiment):
-    with pytest.raises(SystemExit, match="needs --component and --seed"):
-        run(experiment, refuse, ["delete", "--component", "b"])
+def test_delete_without_seed_or_run_id_removes_the_whole_component(experiment):
+    run(experiment, process, ["sweep"])
+    run(experiment, refuse, ["delete", "--component", "a", "--yes"])
+    assert completed(experiment)["a"] == set()
+    assert len(completed(experiment)["b"]) == 2
+
+
+def test_delete_needs_a_component(experiment):
+    with pytest.raises(SystemExit, match="needs --component"):
+        run(experiment, refuse, ["delete"])
 
 
 def test_delete_with_no_matches_reports_none(experiment, capsys):

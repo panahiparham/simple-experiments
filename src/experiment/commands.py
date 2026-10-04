@@ -151,24 +151,25 @@ def _delete_targets(
 
     ``--run-id`` bypasses recomputing the component's current runs entirely,
     for a run whose config has since changed and so no longer resolves to the
-    same id.
+    same id. Without ``--seed`` or ``--run-id``, every stored run of the
+    component is targeted, including ones from earlier configs.
 
     Raises:
-        SystemExit: If the given flags don't identify a component, or a
-            component without either ``--seed`` or ``--run-id``.
+        SystemExit: If the given flags don't identify a component.
     """
     if args.run_ids is not None and args.component is None:
         raise SystemExit("--run-id needs --component")
     if args.run_ids is not None:
         return args.component, list(args.run_ids)
 
-    if args.component is None or args.seed is None:
-        raise SystemExit("delete needs --component and --seed, or --run-id")
+    if args.component is None:
+        raise SystemExit("delete needs --component")
     picked = _one_component(experiment, args.component)
+    if args.seeds is None:
+        return picked.name, sorted(completed(experiment)[picked.name])
     overrides = parse_overrides(args.overrides)
-    targets = [
-        run.id for run in component_runs(picked, overrides) if run.seed == args.seed
-    ]
+    seeds = set(args.seeds)
+    targets = [run.id for run in component_runs(picked, overrides) if run.seed in seeds]
     return picked.name, targets
 
 
@@ -176,7 +177,7 @@ def _delete(experiment: Experiment, argv: list[str]) -> None:
     """Delete stored runs, targeted by component+seed or given directly by id."""
     parser = argparse.ArgumentParser(prog="run.py delete")
     parser.add_argument("--component", default=None)
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--seed", dest="seeds", type=int, nargs="+", default=None)
     parser.add_argument("--run-id", dest="run_ids", nargs="+", default=None)
     parser.add_argument("--yes", action="store_true")
     _add_override_flag(parser)
