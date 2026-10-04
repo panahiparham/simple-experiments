@@ -410,6 +410,14 @@ def test_delete_by_run_id_bypasses_resolution(experiment):
     assert completed(experiment)["b"] == set()
 
 
+def test_delete_removes_every_given_run_id(experiment):
+    run(experiment, process, ["sweep", "--component", "a"])
+    first, second, *rest = load_runs(experiment, "a")["run_id"]
+    argv = ["delete", "--component", "a", "--run-id", first, second, "--yes"]
+    run(experiment, refuse, argv)
+    assert completed(experiment)["a"] == set(rest)
+
+
 def test_delete_run_id_needs_a_component(experiment):
     with pytest.raises(SystemExit, match="needs --component"):
         run(experiment, refuse, ["delete", "--run-id", "whatever"])
