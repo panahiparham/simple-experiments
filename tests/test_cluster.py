@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from experiment import slurm
 from experiment.design import Component, Experiment, SlurmResources
+from experiment.results import completed
 
 
 @pytest.fixture(autouse=True)
@@ -541,6 +544,70 @@ def test_a_sweep_chains_a_plan_an_array_and_a_merge(cluster, repo, capsys):
     dispatch_sweep(repo, 4)
 
     assert job_names(capsys.readouterr().out) == ["plan", "sweep", "merge"]
+
+
+def test_only_the_plan_job_of_a_fresh_sweep_clears_results(cluster, repo, capsys):
+    cluster()
+
+    slurm.dispatch(
+        experiment=experiment_at(repo / "results"),
+        run_py=repo / "run.py",
+        mode="sweep",
+        argv=["--num-workers", "2", "--fresh", "--yes"],
+        dry_run=True,
+    )
+
+    fresh = [line for line in capsys.readouterr().out.splitlines() if "--fresh" in line]
+    assert job_names("\n".join(fresh)) == ["plan"]
+
+
+FRESH_RUN_PY = """\
+import dataclasses
+from pathlib import Path
+
+from experiment.commands import run
+from experiment.design import Component, Experiment
+
+
+@dataclasses.dataclass(frozen=True)
+class Cfg:
+    LR: float = 1e-3
+
+
+EXPERIMENT = Experiment(
+    name="toy",
+    results_dir=Path(__file__).parent / "results",
+    components=[Component(name="a", config=Cfg(), seeds=[0, 1])],
+)
+
+if __name__ == "__main__":
+    run(EXPERIMENT, lambda configs, seeds: [{} for _ in seeds])
+"""
+
+
+@pytest.fixture
+def fake_sbatch(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    sbatch = bin_dir / "sbatch"
+    sbatch.write_text("#!/bin/sh\necho 1\n")
+    sbatch.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+
+def test_a_fresh_dispatch_clears_the_local_results(cluster, repo, fake_sbatch):
+    cluster()
+    (repo / ".gitignore").write_text("results/\n.cluster/\n")
+    commit_file(repo, "run.py", FRESH_RUN_PY)
+    run_py = [sys.executable, "run.py"]
+    subprocess.run([*run_py, "sweep"], cwd=repo, check=True)
+
+    subprocess.run(
+        [*run_py, "sweep", "--slurm", "--fresh", "--yes", "--num-workers", "1"],
+        cwd=repo, check=True, capture_output=True,
+    )
+
+    assert completed(experiment_at(repo / "results"))["a"] == set()
 
 
 def test_a_sweep_sizes_its_array_to_the_worker_count(cluster, repo, capsys):

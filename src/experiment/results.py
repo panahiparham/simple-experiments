@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 from typing import Sequence
@@ -39,6 +40,7 @@ __all__ = [
     "ResultWriter",
     "merge_parts",
     "delete_runs",
+    "clear_results",
     "load_runs",
     "load_result",
     "load_array",
@@ -343,33 +345,50 @@ def _flatten(config: dict, prefix: str = "") -> dict:
 
 
 def delete_runs(experiment: Experiment, component: str, run_ids: Sequence[str]) -> int:
-    """Remove stored runs from the merged database.
+    """Remove stored runs from the merged database and every part.
 
-    Never touches a sweep's in-progress parts - only the merged database, which
-    is the store a completed sweep or single run is read from.
+    Parts count towards what is done, so a run left in one would still be
+    skipped by the next plan.
 
     Args:
-        experiment: The experiment whose database to modify.
+        experiment: The experiment whose databases to modify.
         component: The component whose table to delete from.
         run_ids: The run ids to remove.
 
     Returns:
-        The number of rows actually deleted.
+        The number of distinct runs actually deleted.
     """
-    path = database_path(experiment)
-    if not run_ids or not path.exists() or component not in _tables(path):
+    if not run_ids:
         return 0
-    conn = _connect_write(path)
-    try:
-        placeholders = ", ".join("?" for _ in run_ids)
-        cursor = conn.execute(
-            f'DELETE FROM "{component}" WHERE run_id IN ({placeholders})',
-            tuple(run_ids),
-        )
-        conn.commit()
-        return cursor.rowcount
-    finally:
-        conn.close()
+    placeholders = ", ".join("?" for _ in run_ids)
+    removed: set[str] = set()
+    for path in _database_paths(experiment):
+        if component not in _tables(path):
+            continue
+        conn = _connect_write(path)
+        try:
+            rows = conn.execute(
+                f'DELETE FROM "{component}" WHERE run_id IN ({placeholders}) '
+                "RETURNING run_id",
+                tuple(run_ids),
+            ).fetchall()
+            conn.commit()
+        finally:
+            conn.close()
+        removed.update(run for (run,) in rows)
+    return len(removed)
+
+
+def clear_results(experiment: Experiment) -> None:
+    """Remove an experiment's merged database and every part.
+
+    Args:
+        experiment: The experiment whose results to remove.
+    """
+    database_path(experiment).unlink(missing_ok=True)
+    parts = _parts_dir(experiment)
+    if parts.is_dir():
+        shutil.rmtree(parts)
 
 
 def load_runs(experiment: Experiment, component: str) -> pl.DataFrame:

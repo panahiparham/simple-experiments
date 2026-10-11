@@ -27,7 +27,13 @@ from experiment.plan import (
     pack_shards,
     plan_experiment,
 )
-from experiment.results import _parts_dir, completed, delete_runs, merge_parts
+from experiment.results import (
+    _parts_dir,
+    clear_results,
+    completed,
+    delete_runs,
+    merge_parts,
+)
 from experiment.runner import ShardFn, run_shards
 
 __all__ = ["parse_overrides", "run"]
@@ -77,6 +83,40 @@ def _add_override_flag(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_fresh_flags(parser: argparse.ArgumentParser) -> None:
+    """Add ``--fresh``, and the ``--yes`` it needs before deleting anything."""
+    parser.add_argument("--fresh", action="store_true")
+    parser.add_argument("--yes", action="store_true")
+
+
+def _start_fresh(
+    experiment: Experiment, targets: dict[str, list[str]] | None, *, yes: bool
+) -> bool:
+    """Delete the stored runs a ``--fresh`` run replaces.
+
+    ``None`` targets every stored result, including those of components the
+    experiment no longer declares.
+
+    Returns:
+        Whether to go ahead. Without ``yes`` the targets are only reported.
+    """
+    if targets is None:
+        if yes:
+            clear_results(experiment)
+        verb = "deleted" if yes else "would delete"
+        print(f"[{experiment.name}] {verb} every stored result")
+    for component, run_ids in (targets or {}).items():
+        label = f"[{experiment.name}:{component}]"
+        if not yes:
+            print(f"{label} would delete {len(run_ids)} run(s)")
+            continue
+        removed = delete_runs(experiment, component, run_ids)
+        print(f"{label} deleted {removed} run(s)")
+    if not yes:
+        print(f"[{experiment.name}] pass --yes to delete them and run fresh")
+    return yes
+
+
 def _at_least_one(text: str) -> int:
     """Read a command-line count that must be at least 1."""
     value = int(text)
@@ -111,30 +151,42 @@ def _one_component(experiment: Experiment, name: str | None) -> Component:
     )
 
 
+def _single_parser() -> argparse.ArgumentParser:
+    """The options ``single`` takes."""
+    parser = argparse.ArgumentParser(prog="run.py single")
+    parser.add_argument("--component", default=None)
+    parser.add_argument("--seed", type=int, default=0)
+    _add_override_flag(parser)
+    _add_fresh_flags(parser)
+    return parser
+
+
+def _single_only(experiment: Experiment, args: argparse.Namespace) -> Component:
+    """The component a single run uses: its base config, for one seed."""
+    component = _one_component(experiment, args.component)
+    return dataclasses.replace(
+        component, sweep={}, seeds=(args.seed,), shard_size=None
+    )
+
+
 def _single(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
     """Run one seed of one component, from its base config.
 
     The component's sweep is ignored - a single run is the base config, plus
     whatever ``--set`` overrides were given.
     """
-    parser = argparse.ArgumentParser(prog="run.py single")
-    parser.add_argument("--component", default=None)
-    parser.add_argument("--seed", type=int, default=0)
-    _add_override_flag(parser)
-    args = parser.parse_args(argv)
+    args = _single_parser().parse_args(argv)
 
-    component = _one_component(experiment, args.component)
-    only = dataclasses.replace(
-        component, sweep={}, seeds=(args.seed,), shard_size=None
-    )
+    if args.fresh:
+        targets = _fresh_targets(experiment, "single", args)
+        if not _start_fresh(experiment, targets, yes=args.yes):
+            return
+
+    only = _single_only(experiment, args)
     scoped = dataclasses.replace(experiment, components=(only,))
-
-    shards = plan_experiment(
-        scoped,
-        done=completed(scoped),
-        overrides=parse_overrides(args.overrides),
-    )
-    label = f"[{experiment.name}:{component.name}]"
+    overrides = parse_overrides(args.overrides)
+    shards = plan_experiment(scoped, done=completed(scoped), overrides=overrides)
+    label = f"[{experiment.name}:{only.name}]"
     if not shards:
         print(f"{label} seed {args.seed} is already stored")
         return
@@ -207,6 +259,7 @@ def _sweep_parser() -> argparse.ArgumentParser:
     parser.add_argument("--parallel-shards", type=_at_least_one, default=None)
     parser.add_argument("--component", nargs="+", default=None)
     _add_override_flag(parser)
+    _add_fresh_flags(parser)
     # A local sweep does all three steps itself. A cluster sweep schedules them
     # as separate jobs, so each is reachable on its own: decide the plan once,
     # work through it in parallel, then merge what the workers wrote. Set by the
@@ -289,6 +342,25 @@ def _run_phases(
     return saved, ran
 
 
+def _fresh_targets(
+    experiment: Experiment, mode: str, args: argparse.Namespace
+) -> dict[str, list[str]] | None:
+    """What ``--fresh`` deletes for a mode's arguments; ``None`` is everything.
+
+    A single run replaces its own run, and a sweep the named components whole,
+    or with none named the entire store.
+    """
+    if mode == "single":
+        only = _single_only(experiment, args)
+        overrides = parse_overrides(args.overrides)
+        return {only.name: [run.id for run in component_runs(only, overrides)]}
+    if args.component is None:
+        return None
+    stored = completed(experiment)
+    picked = _select(experiment, args.component)
+    return {c.name: sorted(stored[c.name]) for c in picked}
+
+
 def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
     """Run every outstanding run of an experiment, across a pool of workers.
 
@@ -315,6 +387,11 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
                 f"{saved} run(s) from {ran} shard(s)"
             )
         return
+
+    if args.fresh:
+        targets = _fresh_targets(experiment, "sweep", args)
+        if not _start_fresh(experiment, targets, yes=args.yes):
+            return
 
     plan = plan_experiment(
         experiment,
@@ -530,6 +607,33 @@ def _sync(experiment: Experiment, cluster: _Cluster, argv: list[str]) -> None:
     print(f"[{experiment.name}] merged {merge_parts(experiment)} run(s)")
 
 
+def _dispatch(
+    experiment: Experiment, cluster: _Cluster, mode: str, argv: list[str]
+) -> None:
+    """Run ``single`` or ``sweep`` on the cluster.
+
+    ``--fresh`` goes with the job, which clears the cluster's results. The local
+    ones are cleared too, or a later sync would keep them over the new runs.
+    """
+    parser = _single_parser() if mode == "single" else _sweep_parser()
+    args = parser.parse_args(argv)
+    if args.fresh and not args.yes:
+        _start_fresh(experiment, _fresh_targets(experiment, mode, args), yes=False)
+        return
+
+    slurm.dispatch(
+        experiment=experiment,
+        run_py=Path(sys.argv[0]).resolve(),
+        mode=mode,
+        argv=argv,
+        config_path=cluster.config,
+        dry_run=cluster.dry_run,
+        wip=cluster.wip,
+    )
+    if args.fresh and not cluster.dry_run:
+        _start_fresh(experiment, _fresh_targets(experiment, mode, args), yes=True)
+
+
 def run(
     experiment: Experiment,
     process: ShardFn,
@@ -581,15 +685,7 @@ def run(
             raise SystemExit(
                 f"[{experiment.name}] {mode} runs here, not on the cluster"
             )
-        slurm.dispatch(
-            experiment=experiment,
-            run_py=Path(sys.argv[0]).resolve(),
-            mode=mode,
-            argv=rest,
-            config_path=cluster.config,
-            dry_run=cluster.dry_run,
-            wip=cluster.wip,
-        )
+        _dispatch(experiment, cluster, mode, rest)
         return
 
     if mode == "single":
