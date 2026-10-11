@@ -227,6 +227,35 @@ def test_sweep_leaves_no_parts_behind(experiment, tmp_path):
     assert not (tmp_path / "toy.parts").exists()
 
 
+def test_sweep_fresh_recomputes_only_the_named_component(experiment):
+    run(experiment, process, ["sweep"])
+    run(experiment, recompute, ["sweep", "--component", "b", "--fresh", "--yes"])
+    assert rewards(experiment, "b") == [[-1.0, -1.0], [-1.0, -1.0]]
+    assert len(completed(experiment)["a"]) == 6
+
+
+def test_sweep_fresh_drops_runs_of_earlier_configs(experiment):
+    run(experiment, process, ["single", "--component", "b", "--set", "LR=0.5"])
+    run(experiment, process, ["sweep", "--component", "b", "--fresh", "--yes"])
+    assert load_runs(experiment, "b")["LR"].to_list() == [1e-3, 1e-3]
+
+
+def test_sweep_fresh_clears_components_no_longer_declared(experiment):
+    run(experiment, process, ["sweep"])
+    narrowed = dataclasses.replace(experiment, components=experiment.components[1:])
+    run(narrowed, process, ["sweep", "--fresh", "--yes"])
+    assert completed(experiment)["a"] == set()
+    assert len(completed(experiment)["b"]) == 2
+
+
+def test_sweep_fresh_without_yes_previews(experiment, capsys):
+    run(experiment, process, ["sweep"])
+    capsys.readouterr()
+    run(experiment, refuse, ["sweep", "--fresh"])
+    assert "pass --yes" in capsys.readouterr().out
+    assert len(completed(experiment)["a"]) == 6
+
+
 # --- a sweep split into steps -----------------------------------------------
 
 
