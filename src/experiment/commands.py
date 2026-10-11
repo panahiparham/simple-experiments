@@ -111,17 +111,22 @@ def _one_component(experiment: Experiment, name: str | None) -> Component:
     )
 
 
+def _single_parser() -> argparse.ArgumentParser:
+    """The options ``single`` takes."""
+    parser = argparse.ArgumentParser(prog="run.py single")
+    parser.add_argument("--component", default=None)
+    parser.add_argument("--seed", type=int, default=0)
+    _add_override_flag(parser)
+    return parser
+
+
 def _single(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
     """Run one seed of one component, from its base config.
 
     The component's sweep is ignored - a single run is the base config, plus
     whatever ``--set`` overrides were given.
     """
-    parser = argparse.ArgumentParser(prog="run.py single")
-    parser.add_argument("--component", default=None)
-    parser.add_argument("--seed", type=int, default=0)
-    _add_override_flag(parser)
-    args = parser.parse_args(argv)
+    args = _single_parser().parse_args(argv)
 
     component = _one_component(experiment, args.component)
     only = dataclasses.replace(
