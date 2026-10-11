@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 from typing import Sequence
@@ -39,6 +40,7 @@ __all__ = [
     "ResultWriter",
     "merge_parts",
     "delete_runs",
+    "clear_results",
     "load_runs",
     "load_result",
     "load_array",
@@ -375,6 +377,18 @@ def delete_runs(experiment: Experiment, component: str, run_ids: Sequence[str]) 
             conn.close()
         removed.update(run for (run,) in rows)
     return len(removed)
+
+
+def clear_results(experiment: Experiment) -> None:
+    """Remove an experiment's merged database and every part.
+
+    Args:
+        experiment: The experiment whose results to remove.
+    """
+    database_path(experiment).unlink(missing_ok=True)
+    parts = _parts_dir(experiment)
+    if parts.is_dir():
+        shutil.rmtree(parts)
 
 
 def load_runs(experiment: Experiment, component: str) -> pl.DataFrame:
