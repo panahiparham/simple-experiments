@@ -161,6 +161,14 @@ def _single_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _single_only(experiment: Experiment, args: argparse.Namespace) -> Component:
+    """The component a single run uses: its base config, for one seed."""
+    component = _one_component(experiment, args.component)
+    return dataclasses.replace(
+        component, sweep={}, seeds=(args.seed,), shard_size=None
+    )
+
+
 def _single(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
     """Run one seed of one component, from its base config.
 
@@ -169,20 +177,16 @@ def _single(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
     """
     args = _single_parser().parse_args(argv)
 
-    component = _one_component(experiment, args.component)
-    only = dataclasses.replace(
-        component, sweep={}, seeds=(args.seed,), shard_size=None
-    )
-    scoped = dataclasses.replace(experiment, components=(only,))
-    overrides = parse_overrides(args.overrides)
-
     if args.fresh:
-        targets = {only.name: [run.id for run in component_runs(only, overrides)]}
+        targets = _fresh_targets(experiment, "single", args)
         if not _start_fresh(experiment, targets, yes=args.yes):
             return
 
+    only = _single_only(experiment, args)
+    scoped = dataclasses.replace(experiment, components=(only,))
+    overrides = parse_overrides(args.overrides)
     shards = plan_experiment(scoped, done=completed(scoped), overrides=overrides)
-    label = f"[{experiment.name}:{component.name}]"
+    label = f"[{experiment.name}:{only.name}]"
     if not shards:
         print(f"{label} seed {args.seed} is already stored")
         return
@@ -338,14 +342,23 @@ def _run_phases(
     return saved, ran
 
 
-def _sweep_targets(
-    experiment: Experiment, names: list[str] | None
+def _fresh_targets(
+    experiment: Experiment, mode: str, args: argparse.Namespace
 ) -> dict[str, list[str]] | None:
-    """What ``sweep --fresh`` deletes: the named components, or everything."""
-    if names is None:
+    """What ``--fresh`` deletes for a mode's arguments; ``None`` is everything.
+
+    A single run replaces its own run, and a sweep the named components whole,
+    or with none named the entire store.
+    """
+    if mode == "single":
+        only = _single_only(experiment, args)
+        overrides = parse_overrides(args.overrides)
+        return {only.name: [run.id for run in component_runs(only, overrides)]}
+    if args.component is None:
         return None
     stored = completed(experiment)
-    return {c.name: sorted(stored[c.name]) for c in _select(experiment, names)}
+    picked = _select(experiment, args.component)
+    return {c.name: sorted(stored[c.name]) for c in picked}
 
 
 def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
@@ -376,7 +389,7 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
         return
 
     if args.fresh:
-        targets = _sweep_targets(experiment, args.component)
+        targets = _fresh_targets(experiment, "sweep", args)
         if not _start_fresh(experiment, targets, yes=args.yes):
             return
 
