@@ -120,6 +120,17 @@ A value is read as the type of the field it replaces. Precedence is the base
 config, then `--set`, then the sweep, so sweeping a path always wins over
 setting it.
 
+`--fresh` deletes stored results before running, so they are recomputed. Without
+`--yes` it only lists what it would delete.
+
+```bash
+run.py single --component tuned --seed 0 --fresh --yes  # that run
+run.py sweep --component tuned --fresh --yes            # every run of tuned
+run.py sweep --fresh --yes                              # every stored result
+```
+
+With `--slurm`, the results are deleted both locally and on the cluster.
+
 ### Access results
 
 ```python
