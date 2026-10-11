@@ -20,6 +20,7 @@ from experiment.results import (
     _part_path,
     _parts_dir,
     _query_ro,
+    clear_results,
     completed,
     database_path,
     delete_runs,
@@ -241,6 +242,21 @@ def test_a_run_in_both_the_database_and_a_part_counts_once(experiment):
     run_id = shard.runs[0].id
     assert delete_runs(experiment, shard.component, [run_id]) == 1
     assert run_id not in completed(experiment)[shard.component]
+
+
+def test_clearing_removes_merged_and_unmerged_runs(experiment):
+    run_everything(experiment)
+    merge_parts(experiment)
+    with ResultWriter(experiment, "late") as writer:
+        shard = plan_experiment(experiment)[0]
+        writer.save(shard, [result(r.seed) for r in shard.runs])
+    clear_results(experiment)
+    assert completed(experiment) == {"a": set(), "b": set()}
+
+
+def test_clearing_an_empty_store_is_a_no_op(experiment):
+    clear_results(experiment)
+    assert completed(experiment) == {"a": set(), "b": set()}
 
 
 # --- reading ----------------------------------------------------------------
