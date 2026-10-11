@@ -607,6 +607,33 @@ def _sync(experiment: Experiment, cluster: _Cluster, argv: list[str]) -> None:
     print(f"[{experiment.name}] merged {merge_parts(experiment)} run(s)")
 
 
+def _dispatch(
+    experiment: Experiment, cluster: _Cluster, mode: str, argv: list[str]
+) -> None:
+    """Run ``single`` or ``sweep`` on the cluster.
+
+    ``--fresh`` goes with the job, which clears the cluster's results. The local
+    ones are cleared too, or a later sync would keep them over the new runs.
+    """
+    parser = _single_parser() if mode == "single" else _sweep_parser()
+    args = parser.parse_args(argv)
+    if args.fresh and not args.yes:
+        _start_fresh(experiment, _fresh_targets(experiment, mode, args), yes=False)
+        return
+
+    slurm.dispatch(
+        experiment=experiment,
+        run_py=Path(sys.argv[0]).resolve(),
+        mode=mode,
+        argv=argv,
+        config_path=cluster.config,
+        dry_run=cluster.dry_run,
+        wip=cluster.wip,
+    )
+    if args.fresh and not cluster.dry_run:
+        _start_fresh(experiment, _fresh_targets(experiment, mode, args), yes=True)
+
+
 def run(
     experiment: Experiment,
     process: ShardFn,
@@ -658,15 +685,7 @@ def run(
             raise SystemExit(
                 f"[{experiment.name}] {mode} runs here, not on the cluster"
             )
-        slurm.dispatch(
-            experiment=experiment,
-            run_py=Path(sys.argv[0]).resolve(),
-            mode=mode,
-            argv=rest,
-            config_path=cluster.config,
-            dry_run=cluster.dry_run,
-            wip=cluster.wip,
-        )
+        _dispatch(experiment, cluster, mode, rest)
         return
 
     if mode == "single":
