@@ -27,7 +27,13 @@ from experiment.plan import (
     pack_shards,
     plan_experiment,
 )
-from experiment.results import _parts_dir, completed, delete_runs, merge_parts
+from experiment.results import (
+    _parts_dir,
+    clear_results,
+    completed,
+    delete_runs,
+    merge_parts,
+)
 from experiment.runner import ShardFn, run_shards
 
 __all__ = ["parse_overrides", "run"]
@@ -84,14 +90,22 @@ def _add_fresh_flags(parser: argparse.ArgumentParser) -> None:
 
 
 def _start_fresh(
-    experiment: Experiment, targets: dict[str, list[str]], *, yes: bool
+    experiment: Experiment, targets: dict[str, list[str]] | None, *, yes: bool
 ) -> bool:
     """Delete the stored runs a ``--fresh`` run replaces.
+
+    ``None`` targets every stored result, including those of components the
+    experiment no longer declares.
 
     Returns:
         Whether to go ahead. Without ``yes`` the targets are only reported.
     """
-    for component, run_ids in targets.items():
+    if targets is None:
+        if yes:
+            clear_results(experiment)
+        verb = "deleted" if yes else "would delete"
+        print(f"[{experiment.name}] {verb} every stored result")
+    for component, run_ids in (targets or {}).items():
         label = f"[{experiment.name}:{component}]"
         if not yes:
             print(f"{label} would delete {len(run_ids)} run(s)")
@@ -241,6 +255,7 @@ def _sweep_parser() -> argparse.ArgumentParser:
     parser.add_argument("--parallel-shards", type=_at_least_one, default=None)
     parser.add_argument("--component", nargs="+", default=None)
     _add_override_flag(parser)
+    _add_fresh_flags(parser)
     # A local sweep does all three steps itself. A cluster sweep schedules them
     # as separate jobs, so each is reachable on its own: decide the plan once,
     # work through it in parallel, then merge what the workers wrote. Set by the
@@ -323,6 +338,16 @@ def _run_phases(
     return saved, ran
 
 
+def _sweep_targets(
+    experiment: Experiment, names: list[str] | None
+) -> dict[str, list[str]] | None:
+    """What ``sweep --fresh`` deletes: the named components, or everything."""
+    if names is None:
+        return None
+    stored = completed(experiment)
+    return {c.name: sorted(stored[c.name]) for c in _select(experiment, names)}
+
+
 def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
     """Run every outstanding run of an experiment, across a pool of workers.
 
@@ -349,6 +374,11 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
                 f"{saved} run(s) from {ran} shard(s)"
             )
         return
+
+    if args.fresh:
+        targets = _sweep_targets(experiment, args.component)
+        if not _start_fresh(experiment, targets, yes=args.yes):
+            return
 
     plan = plan_experiment(
         experiment,
