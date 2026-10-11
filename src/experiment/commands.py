@@ -77,6 +77,32 @@ def _add_override_flag(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_fresh_flags(parser: argparse.ArgumentParser) -> None:
+    """Add ``--fresh``, and the ``--yes`` it needs before deleting anything."""
+    parser.add_argument("--fresh", action="store_true")
+    parser.add_argument("--yes", action="store_true")
+
+
+def _start_fresh(
+    experiment: Experiment, targets: dict[str, list[str]], *, yes: bool
+) -> bool:
+    """Delete the stored runs a ``--fresh`` run replaces.
+
+    Returns:
+        Whether to go ahead. Without ``yes`` the targets are only reported.
+    """
+    for component, run_ids in targets.items():
+        label = f"[{experiment.name}:{component}]"
+        if not yes:
+            print(f"{label} would delete {len(run_ids)} run(s)")
+            continue
+        removed = delete_runs(experiment, component, run_ids)
+        print(f"{label} deleted {removed} run(s)")
+    if not yes:
+        print(f"[{experiment.name}] pass --yes to delete them and run fresh")
+    return yes
+
+
 def _at_least_one(text: str) -> int:
     """Read a command-line count that must be at least 1."""
     value = int(text)
@@ -117,6 +143,7 @@ def _single_parser() -> argparse.ArgumentParser:
     parser.add_argument("--component", default=None)
     parser.add_argument("--seed", type=int, default=0)
     _add_override_flag(parser)
+    _add_fresh_flags(parser)
     return parser
 
 
@@ -133,12 +160,14 @@ def _single(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
         component, sweep={}, seeds=(args.seed,), shard_size=None
     )
     scoped = dataclasses.replace(experiment, components=(only,))
+    overrides = parse_overrides(args.overrides)
 
-    shards = plan_experiment(
-        scoped,
-        done=completed(scoped),
-        overrides=parse_overrides(args.overrides),
-    )
+    if args.fresh:
+        targets = {only.name: [run.id for run in component_runs(only, overrides)]}
+        if not _start_fresh(experiment, targets, yes=args.yes):
+            return
+
+    shards = plan_experiment(scoped, done=completed(scoped), overrides=overrides)
     label = f"[{experiment.name}:{component.name}]"
     if not shards:
         print(f"{label} seed {args.seed} is already stored")
