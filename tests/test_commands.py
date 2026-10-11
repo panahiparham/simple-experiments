@@ -248,6 +248,14 @@ def test_sweep_fresh_clears_components_no_longer_declared(experiment):
     assert len(completed(experiment)["b"]) == 2
 
 
+def test_a_fresh_dispatch_without_yes_keeps_local_results(experiment, capsys):
+    run(experiment, process, ["sweep"])
+    capsys.readouterr()
+    run(experiment, refuse, ["sweep", "--slurm", "--fresh"])
+    assert "pass --yes" in capsys.readouterr().out
+    assert len(completed(experiment)["a"]) == 6
+
+
 def test_sweep_fresh_without_yes_previews(experiment, capsys):
     run(experiment, process, ["sweep"])
     capsys.readouterr()
