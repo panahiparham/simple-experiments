@@ -196,8 +196,10 @@ def _local_mode() -> bool:
     return os.environ.get("EXPERIMENT_LOCAL_MODE") == "1"
 
 
-def _run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, capture_output=True, text=True, **kwargs)
+def _run(
+    argv: list[str], check: bool = False, **kwargs
+) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, capture_output=True, text=True, check=check, **kwargs)
 
 
 def _check_auth(cfg: ClusterConfig, stderr: str) -> None:
@@ -242,7 +244,9 @@ def _ssh_script(cfg: ClusterConfig, script: Path, *args: str) -> str:
     argv = ["bash", "-s", "--", *args] if _local_mode() else [
         "ssh", cfg.host, f"bash -s -- {quoted}"
     ]
-    proc = subprocess.run(argv, input=body, capture_output=True, text=True)
+    proc = subprocess.run(
+        argv, input=body, capture_output=True, text=True, check=False
+    )
     _check_auth(cfg, proc.stderr)
     if proc.stderr:
         print(proc.stderr, end="", file=sys.stderr)
