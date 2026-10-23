@@ -154,7 +154,11 @@ def _to_blob(result: dict[str, np.ndarray]) -> bytes | None:
     if not result:
         return None
     buffer = io.BytesIO()
-    np.savez_compressed(buffer, **{k: np.asarray(v) for k, v in result.items()})
+    np.savez_compressed(
+        buffer,
+        allow_pickle=False,
+        **{k: np.asarray(v) for k, v in result.items()},
+    )
     return buffer.getvalue()
 
 
