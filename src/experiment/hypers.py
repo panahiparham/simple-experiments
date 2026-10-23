@@ -239,4 +239,7 @@ def coerce_value(text: str, current: Any) -> Any:
         return float(text)
     if isinstance(current, str):
         return text
-    return ast.literal_eval(text)
+    try:
+        return ast.literal_eval(text)
+    except ValueError as error:
+        raise ValueError(f"expected a Python literal, got {text!r}") from error
