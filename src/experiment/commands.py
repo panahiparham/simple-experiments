@@ -682,7 +682,7 @@ def run(
         return
 
     if cluster.enabled and mode != "status":
-        if mode != "single" and mode != "sweep":
+        if mode not in {"single", "sweep"}:
             raise SystemExit(
                 f"[{experiment.name}] {mode} runs here, not on the cluster"
             )
