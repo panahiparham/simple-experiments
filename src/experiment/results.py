@@ -24,8 +24,8 @@ import io
 import json
 import shutil
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 import polars as pl

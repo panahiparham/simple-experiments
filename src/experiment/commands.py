@@ -14,8 +14,8 @@ import math
 import pickle
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from experiment import slurm
 from experiment.design import Component, Experiment
