@@ -250,7 +250,7 @@ class ResultWriter:
             self._tables.add(shard.component)
 
         before = conn.total_changes
-        for run, result in zip(shard.runs, results):
+        for run, result in zip(shard.runs, results, strict=True):
             conn.execute(
                 f'INSERT OR IGNORE INTO "{shard.component}" ({_COLUMNS}) '
                 "VALUES (?, ?, ?, ?, ?)",

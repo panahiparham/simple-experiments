@@ -67,7 +67,8 @@ def expand_sweep(sweep: dict[str, list]) -> list[dict[str, Any]]:
     """
     paths = list(sweep)
     values = [list(sweep[p]) for p in paths]
-    return [dict(zip(paths, combo)) for combo in itertools.product(*values)]
+    combos = itertools.product(*values)
+    return [dict(zip(paths, combo, strict=True)) for combo in combos]
 
 
 def sweep_configs(
