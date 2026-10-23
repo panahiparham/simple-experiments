@@ -421,9 +421,9 @@ def _uses_mps(resources: dict[str, Any]) -> bool:
     return bool(resources.get("mps")) and int(resources.get("gpus", 0)) > 0
 
 
-def _job_command(
+def _job_command(  # noqa: PLR0913
     rundir: str, run_py_rel: str, venv: str, mode: str, argv: list[str],
-    src_dirs: list[str],
+    *, src_dirs: list[str],
 ) -> str:
     """The shell command one sbatch task runs.
 
@@ -524,7 +524,7 @@ def _num_workers(argv: list[str]) -> tuple[int, list[str]]:
 # --- public API --------------------------------------------------------------------
 
 
-def dispatch(
+def dispatch(  # noqa: PLR0913
     *,
     experiment: Experiment,
     run_py: Path,
@@ -612,7 +612,7 @@ def dispatch(
             wrap=_job_command(rundir, run_py_rel, venv_path, "sweep",
                               ["--write-plan", plan_file,
                                "--num-workers", str(workers), *rest],
-                              cfg.src_dirs),
+                              src_dirs=cfg.src_dirs),
         ), dry_run=dry_run)
         # The filters and overrides in `rest` are baked into the plan already, so
         # a task needs nothing beyond its own index.
@@ -624,7 +624,8 @@ def dispatch(
             f"--output={rundir}/logs/sweep-%A_%a.out",
             wrap=start_mps + _job_command(
                 rundir, run_py_rel, venv_path, "sweep",
-                ["--plan", plan_file, "--worker-index", _TASK_ID], cfg.src_dirs,
+                ["--plan", plan_file, "--worker-index", _TASK_ID],
+                src_dirs=cfg.src_dirs,
             ),
         ), dry_run=dry_run)
         merge = _submit(cfg, _sbatch_argv(
@@ -633,7 +634,7 @@ def dispatch(
             "--job-name=merge",
             f"--output={rundir}/logs/merge-%j.out",
             wrap=_job_command(rundir, run_py_rel, venv_path, "sweep",
-                              ["--merge-only"], cfg.src_dirs),
+                              ["--merge-only"], src_dirs=cfg.src_dirs),
         ), dry_run=dry_run)
         jobs = {"plan": plan, "array": array, "merge": merge}
     else:
@@ -642,7 +643,8 @@ def dispatch(
             "--job-name=single",
             f"--output={rundir}/logs/single-%j.out",
             wrap=start_mps + _job_command(
-                rundir, run_py_rel, venv_path, "single", argv, cfg.src_dirs
+                rundir, run_py_rel, venv_path, "single", argv,
+                src_dirs=cfg.src_dirs,
             ),
         ), dry_run=dry_run)}
 
