@@ -217,7 +217,7 @@ class ResultWriter:
         self._conn: sqlite3.Connection | None = None
         self._tables: set[str] = set()
 
-    def __enter__(self) -> "ResultWriter":
+    def __enter__(self) -> ResultWriter:
         return self
 
     def __exit__(self, *exc_info) -> None:
