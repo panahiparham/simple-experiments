@@ -91,9 +91,11 @@ def sweep_configs(
         ValueError: If a text override cannot be read as the field's type.
     """
     base = component.config
-    for path, value in (overrides or {}).items():
-        if isinstance(value, str):
-            value = coerce_value(value, get_path(base, path))
+    for path, override in (overrides or {}).items():
+        if isinstance(override, str):
+            value = coerce_value(override, get_path(base, path))
+        else:
+            value = override
         base = set_path(base, path, value)
 
     configs = []
