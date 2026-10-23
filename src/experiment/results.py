@@ -24,8 +24,9 @@ import io
 import json
 import shutil
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
+from typing import Self
 
 import numpy as np
 import polars as pl
@@ -35,15 +36,15 @@ from experiment.identity import as_point, config_id
 from experiment.plan import Shard
 
 __all__ = [
-    "database_path",
-    "completed",
     "ResultWriter",
-    "merge_parts",
-    "delete_runs",
     "clear_results",
-    "load_runs",
-    "load_result",
+    "completed",
+    "database_path",
+    "delete_runs",
     "load_array",
+    "load_result",
+    "load_runs",
+    "merge_parts",
 ]
 
 
@@ -154,7 +155,11 @@ def _to_blob(result: dict[str, np.ndarray]) -> bytes | None:
     if not result:
         return None
     buffer = io.BytesIO()
-    np.savez_compressed(buffer, **{k: np.asarray(v) for k, v in result.items()})
+    np.savez_compressed(
+        buffer,
+        allow_pickle=False,
+        **{k: np.asarray(v) for k, v in result.items()},
+    )
     return buffer.getvalue()
 
 
@@ -213,7 +218,7 @@ class ResultWriter:
         self._conn: sqlite3.Connection | None = None
         self._tables: set[str] = set()
 
-    def __enter__(self) -> "ResultWriter":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc_info) -> None:
@@ -246,7 +251,7 @@ class ResultWriter:
             self._tables.add(shard.component)
 
         before = conn.total_changes
-        for run, result in zip(shard.runs, results):
+        for run, result in zip(shard.runs, results, strict=True):
             conn.execute(
                 f'INSERT OR IGNORE INTO "{shard.component}" ({_COLUMNS}) '
                 "VALUES (?, ?, ?, ?, ?)",

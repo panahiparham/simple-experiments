@@ -22,13 +22,13 @@ from typing import Any
 
 __all__ = [
     "TRACED",
-    "traced",
-    "get_path",
-    "set_path",
-    "traced_paths",
-    "split_traced",
-    "merge_traced",
     "coerce_value",
+    "get_path",
+    "merge_traced",
+    "set_path",
+    "split_traced",
+    "traced",
+    "traced_paths",
 ]
 
 
@@ -239,4 +239,7 @@ def coerce_value(text: str, current: Any) -> Any:
         return float(text)
     if isinstance(current, str):
         return text
-    return ast.literal_eval(text)
+    try:
+        return ast.literal_eval(text)
+    except ValueError as error:
+        raise ValueError(f"expected a Python literal, got {text!r}") from error

@@ -119,9 +119,11 @@ def test_saving_a_run_twice_stores_it_once(experiment):
 
 def test_a_result_per_run_is_required(experiment):
     shard = plan_experiment(experiment)[0]
-    with ResultWriter(experiment, "0") as writer:
-        with pytest.raises(ValueError, match="result"):
-            writer.save(shard, [])
+    with (
+        ResultWriter(experiment, "0") as writer,
+        pytest.raises(ValueError, match="result"),
+    ):
+        writer.save(shard, [])
 
 
 def test_a_run_may_produce_nothing(experiment):

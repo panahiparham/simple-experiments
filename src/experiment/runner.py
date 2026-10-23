@@ -8,7 +8,8 @@ sides meet.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from experiment.design import Experiment
 from experiment.plan import Shard

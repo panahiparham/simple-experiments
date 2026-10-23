@@ -14,8 +14,8 @@ import math
 import pickle
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from experiment import slurm
 from experiment.design import Component, Experiment
@@ -378,7 +378,8 @@ def _sweep(experiment: Experiment, process: ShardFn, argv: list[str]) -> None:
     if args.plan is not None:
         if args.worker_index is None:
             raise SystemExit("--plan needs --worker-index")
-        phases = pickle.loads(Path(args.plan).read_bytes())[args.worker_index]
+        plan = pickle.loads(Path(args.plan).read_bytes())  # noqa: S301
+        phases = plan[args.worker_index]
         part = args.part or str(args.worker_index)
         saved, ran = _run_phases(experiment, phases, process, part)
         if ran or not phases:
@@ -681,7 +682,7 @@ def run(
         return
 
     if cluster.enabled and mode != "status":
-        if mode != "single" and mode != "sweep":
+        if mode not in {"single", "sweep"}:
             raise SystemExit(
                 f"[{experiment.name}] {mode} runs here, not on the cluster"
             )

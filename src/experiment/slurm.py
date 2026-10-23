@@ -52,29 +52,29 @@ import sys
 import tempfile
 import tomllib
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from experiment.design import Experiment, SlurmResources
 
 __all__ = [
-    "ClusterConfig",
     "DEFAULT_CONFIG_PATH",
-    "repo_root",
-    "load_config",
-    "resources_for",
-    "resource_flags",
-    "venv_name",
+    "ClusterConfig",
     "dispatch",
     "fetch",
-    "push",
-    "wipe",
     "is_queued",
-    "report_resources",
-    "status",
+    "load_config",
     "logs",
+    "push",
+    "repo_root",
+    "report_resources",
+    "resource_flags",
+    "resources_for",
     "setup",
+    "status",
+    "venv_name",
+    "wipe",
 ]
 
 DEFAULT_CONFIG_PATH = "cluster.toml"
@@ -196,8 +196,10 @@ def _local_mode() -> bool:
     return os.environ.get("EXPERIMENT_LOCAL_MODE") == "1"
 
 
-def _run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, capture_output=True, text=True, **kwargs)
+def _run(
+    argv: list[str], check: bool = False, **kwargs
+) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, capture_output=True, text=True, check=check, **kwargs)
 
 
 def _check_auth(cfg: ClusterConfig, stderr: str) -> None:
@@ -242,7 +244,9 @@ def _ssh_script(cfg: ClusterConfig, script: Path, *args: str) -> str:
     argv = ["bash", "-s", "--", *args] if _local_mode() else [
         "ssh", cfg.host, f"bash -s -- {quoted}"
     ]
-    proc = subprocess.run(argv, input=body, capture_output=True, text=True)
+    proc = subprocess.run(
+        argv, input=body, capture_output=True, text=True, check=False
+    )
     _check_auth(cfg, proc.stderr)
     if proc.stderr:
         print(proc.stderr, end="", file=sys.stderr)
@@ -392,7 +396,7 @@ def _require_state(label: str) -> dict:
 
 
 def _utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # --- sbatch ------------------------------------------------------------------------
@@ -417,9 +421,9 @@ def _uses_mps(resources: dict[str, Any]) -> bool:
     return bool(resources.get("mps")) and int(resources.get("gpus", 0)) > 0
 
 
-def _job_command(
+def _job_command(  # noqa: PLR0913
     rundir: str, run_py_rel: str, venv: str, mode: str, argv: list[str],
-    src_dirs: list[str],
+    *, src_dirs: list[str],
 ) -> str:
     """The shell command one sbatch task runs.
 
@@ -520,7 +524,7 @@ def _num_workers(argv: list[str]) -> tuple[int, list[str]]:
 # --- public API --------------------------------------------------------------------
 
 
-def dispatch(
+def dispatch(  # noqa: PLR0913
     *,
     experiment: Experiment,
     run_py: Path,
@@ -558,7 +562,7 @@ def dispatch(
     resources = resources_for(cfg, experiment)
     venv = venv_name(resources)
     sha = _snapshot_worktree() if wip else _require_clean_tree()
-    runid = f"{label}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{sha[:7]}"
+    runid = f"{label}_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}_{sha[:7]}"
     if wip:
         runid += "-wip"
     repo = repo_root()
@@ -608,7 +612,7 @@ def dispatch(
             wrap=_job_command(rundir, run_py_rel, venv_path, "sweep",
                               ["--write-plan", plan_file,
                                "--num-workers", str(workers), *rest],
-                              cfg.src_dirs),
+                              src_dirs=cfg.src_dirs),
         ), dry_run=dry_run)
         # The filters and overrides in `rest` are baked into the plan already, so
         # a task needs nothing beyond its own index.
@@ -620,7 +624,8 @@ def dispatch(
             f"--output={rundir}/logs/sweep-%A_%a.out",
             wrap=start_mps + _job_command(
                 rundir, run_py_rel, venv_path, "sweep",
-                ["--plan", plan_file, "--worker-index", _TASK_ID], cfg.src_dirs,
+                ["--plan", plan_file, "--worker-index", _TASK_ID],
+                src_dirs=cfg.src_dirs,
             ),
         ), dry_run=dry_run)
         merge = _submit(cfg, _sbatch_argv(
@@ -629,7 +634,7 @@ def dispatch(
             "--job-name=merge",
             f"--output={rundir}/logs/merge-%j.out",
             wrap=_job_command(rundir, run_py_rel, venv_path, "sweep",
-                              ["--merge-only"], cfg.src_dirs),
+                              ["--merge-only"], src_dirs=cfg.src_dirs),
         ), dry_run=dry_run)
         jobs = {"plan": plan, "array": array, "merge": merge}
     else:
@@ -638,7 +643,8 @@ def dispatch(
             "--job-name=single",
             f"--output={rundir}/logs/single-%j.out",
             wrap=start_mps + _job_command(
-                rundir, run_py_rel, venv_path, "single", argv, cfg.src_dirs
+                rundir, run_py_rel, venv_path, "single", argv,
+                src_dirs=cfg.src_dirs,
             ),
         ), dry_run=dry_run)}
 

@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 
-__all__ = ["config_id", "run_id", "as_point"]
+__all__ = ["as_point", "config_id", "run_id"]
 
 
 def _canonical(hypers: dict[str, Any]) -> str:

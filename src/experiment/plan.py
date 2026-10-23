@@ -21,16 +21,16 @@ from experiment.hypers import coerce_value, get_path, set_path, split_traced
 from experiment.identity import config_id, run_id
 
 __all__ = [
+    "Phase",
     "Run",
     "Shard",
-    "expand_sweep",
-    "sweep_configs",
-    "component_runs",
+    "assign_slots",
     "batch_key",
+    "component_runs",
+    "expand_sweep",
     "pack_shards",
     "plan_experiment",
-    "Phase",
-    "assign_slots",
+    "sweep_configs",
 ]
 
 
@@ -67,7 +67,8 @@ def expand_sweep(sweep: dict[str, list]) -> list[dict[str, Any]]:
     """
     paths = list(sweep)
     values = [list(sweep[p]) for p in paths]
-    return [dict(zip(paths, combo)) for combo in itertools.product(*values)]
+    combos = itertools.product(*values)
+    return [dict(zip(paths, combo, strict=True)) for combo in combos]
 
 
 def sweep_configs(
@@ -90,9 +91,11 @@ def sweep_configs(
         ValueError: If a text override cannot be read as the field's type.
     """
     base = component.config
-    for path, value in (overrides or {}).items():
-        if isinstance(value, str):
-            value = coerce_value(value, get_path(base, path))
+    for path, override in (overrides or {}).items():
+        if isinstance(override, str):
+            value = coerce_value(override, get_path(base, path))
+        else:
+            value = override
         base = set_path(base, path, value)
 
     configs = []
