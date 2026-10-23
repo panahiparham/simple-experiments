@@ -11,7 +11,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "mypy>=2.3.1",
+    "pyrefly>=1.4.0",
     "pytest>=8",
     "ruff>=0.16.6",
 ]
@@ -40,7 +40,5 @@ ignore = ["S603", "S607"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106", "S301", "PLR2004"]
 
-[tool.mypy]
-python_version = "3.13"
-strict = true
-files = ["src"]
+[tool.pyrefly]
+project-includes = ["src"]
