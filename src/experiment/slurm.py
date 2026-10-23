@@ -52,7 +52,7 @@ import sys
 import tempfile
 import tomllib
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -392,7 +392,7 @@ def _require_state(label: str) -> dict:
 
 
 def _utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # --- sbatch ------------------------------------------------------------------------
@@ -558,7 +558,7 @@ def dispatch(
     resources = resources_for(cfg, experiment)
     venv = venv_name(resources)
     sha = _snapshot_worktree() if wip else _require_clean_tree()
-    runid = f"{label}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{sha[:7]}"
+    runid = f"{label}_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}_{sha[:7]}"
     if wip:
         runid += "-wip"
     repo = repo_root()
