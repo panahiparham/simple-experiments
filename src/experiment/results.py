@@ -26,6 +26,7 @@ import shutil
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Self
 
 import numpy as np
 import polars as pl
@@ -217,7 +218,7 @@ class ResultWriter:
         self._conn: sqlite3.Connection | None = None
         self._tables: set[str] = set()
 
-    def __enter__(self) -> ResultWriter:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc_info) -> None:
