@@ -22,13 +22,13 @@ from typing import Any
 
 __all__ = [
     "TRACED",
-    "traced",
-    "get_path",
-    "set_path",
-    "traced_paths",
-    "split_traced",
-    "merge_traced",
     "coerce_value",
+    "get_path",
+    "merge_traced",
+    "set_path",
+    "split_traced",
+    "traced",
+    "traced_paths",
 ]
 
 

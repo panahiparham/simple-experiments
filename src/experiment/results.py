@@ -35,15 +35,15 @@ from experiment.identity import as_point, config_id
 from experiment.plan import Shard
 
 __all__ = [
-    "database_path",
-    "completed",
     "ResultWriter",
-    "merge_parts",
-    "delete_runs",
     "clear_results",
-    "load_runs",
-    "load_result",
+    "completed",
+    "database_path",
+    "delete_runs",
     "load_array",
+    "load_result",
+    "load_runs",
+    "merge_parts",
 ]
 
 

@@ -21,16 +21,16 @@ from experiment.hypers import coerce_value, get_path, set_path, split_traced
 from experiment.identity import config_id, run_id
 
 __all__ = [
+    "Phase",
     "Run",
     "Shard",
-    "expand_sweep",
-    "sweep_configs",
-    "component_runs",
+    "assign_slots",
     "batch_key",
+    "component_runs",
+    "expand_sweep",
     "pack_shards",
     "plan_experiment",
-    "Phase",
-    "assign_slots",
+    "sweep_configs",
 ]
 
 
