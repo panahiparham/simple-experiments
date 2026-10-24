@@ -50,7 +50,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -61,6 +61,7 @@ from experiment.results import _CLUSTER_MIRROR, _LOCAL_MIRROR
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "ClusterConfig",
+    "delete_runs",
     "dispatch",
     "fetch",
     "is_queued",
@@ -740,6 +741,37 @@ def push(experiment, *, config_path: str | Path | None = None) -> None:
     _check_auth(cfg, proc.stderr)
     if proc.returncode != 0:
         raise SystemExit(f"rsync to {dest} failed\n{proc.stderr.strip()}")
+
+
+def delete_runs(
+    experiment: Experiment,
+    component: str,
+    run_ids: Sequence[str],
+    *,
+    config_path: str | Path | None = None,
+) -> int:
+    """Remove stored runs from every database in the cluster's results.
+
+    That includes the copy a push left there, so the cluster stops counting
+    them as done. Whatever a fetch mirrored here is the caller's to delete.
+
+    Args:
+        experiment: The experiment whose results to modify.
+        component: The component whose table to delete from.
+        run_ids: The run ids to remove.
+        config_path: The ``cluster.toml`` to read, defaulting to the repo root's.
+
+    Returns:
+        The number of distinct runs actually deleted.
+    """
+    if not run_ids:
+        return 0
+    cfg = load_config(config_path)
+    remote = f"{_remote_root(cfg)}/results/{experiment.name}"
+    out = _ssh_script(
+        cfg, _remote_dir() / "delete_runs.sh", remote, component, *run_ids
+    )
+    return int(_field(out, "REMOVED") or 0)
 
 
 def wipe(*, label: str, config_path: str | Path | None = None) -> None:
