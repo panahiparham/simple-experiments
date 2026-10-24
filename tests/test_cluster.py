@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from experiment import slurm
+from experiment.commands import run
 from experiment.design import Component, Experiment, SlurmResources
 from experiment.results import _connect_write, _ensure_table, _query_ro, completed
 
@@ -908,6 +909,78 @@ def test_deleting_unknown_runs_on_the_cluster_removes_nothing(remote_results):
 
 def test_deleting_no_runs_never_contacts_the_cluster(tmp_path):
     assert slurm.delete_runs(experiment_at(tmp_path), "a", []) == 0
+
+
+@pytest.fixture
+def squeue(tmp_path, repo, monkeypatch):
+    def install(*, queued: bool) -> None:
+        bin_dir = tmp_path / "squeue-bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "squeue"
+        fake.write_text("#!/bin/sh\n" + ("echo 1 RUNNING\n" if queued else ""))
+        fake.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+        state = repo / ".cluster" / "toy.json"
+        state.parent.mkdir(exist_ok=True)
+        state.write_text('{"runid": "toy_x", "jobs": {"sweep": "1"}}')
+
+    return install
+
+
+def delete(local: Path, *args: str) -> None:
+    run(experiment_at(local), lambda configs, seeds: [], ["delete", *args])
+
+
+def test_deleting_a_mirrored_run_deletes_it_on_the_cluster(
+    remote_results, squeue, tmp_path
+):
+    store(remote_results / "toy.db", "a", "r0", "r1")
+    local = tmp_path / "local"
+    slurm.fetch(experiment_at(local))
+    squeue(queued=False)
+
+    delete(local, "--component", "a", "--run-id", "r0", "--yes")
+
+    assert completed(experiment_at(remote_results))["a"] == {"r1"}
+    assert completed(experiment_at(local))["a"] == {"r1"}
+
+
+def test_deleting_reaches_runs_finished_since_the_last_sync(
+    remote_results, squeue, tmp_path
+):
+    store(remote_results / "toy.db", "a", "r0")
+    local = tmp_path / "local"
+    slurm.fetch(experiment_at(local))
+    store(remote_results / "toy.parts" / "part-0.db", "a", "r1")
+    squeue(queued=False)
+
+    delete(local, "--component", "a", "--yes")
+
+    assert completed(experiment_at(remote_results))["a"] == set()
+
+
+def test_deleting_while_jobs_are_queued_is_refused(remote_results, squeue, tmp_path):
+    store(remote_results / "toy.db", "a", "r0")
+    local = tmp_path / "local"
+    slurm.fetch(experiment_at(local))
+    squeue(queued=True)
+
+    with pytest.raises(SystemExit, match="still queued"):
+        delete(local, "--component", "a", "--run-id", "r0", "--yes")
+    assert completed(experiment_at(remote_results))["a"] == {"r0"}
+
+
+def test_previewing_a_delete_while_jobs_are_queued_is_allowed(
+    remote_results, squeue, tmp_path, capsys
+):
+    store(remote_results / "toy.db", "a", "r0")
+    local = tmp_path / "local"
+    slurm.fetch(experiment_at(local))
+    squeue(queued=True)
+
+    delete(local, "--component", "a", "--run-id", "r0")
+
+    assert "would delete r0" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

@@ -28,6 +28,8 @@ from experiment.plan import (
     plan_experiment,
 )
 from experiment.results import (
+    _CLUSTER_MIRROR,
+    _mirrored_runs,
     _parts_dir,
     clear_results,
     completed,
@@ -225,8 +227,12 @@ def _delete_targets(
     return picked.name, targets
 
 
-def _delete(experiment: Experiment, argv: list[str]) -> None:
-    """Delete stored runs, targeted by component+seed or given directly by id."""
+def _delete(experiment: Experiment, cluster: _Cluster, argv: list[str]) -> None:
+    """Delete stored runs, targeted by component+seed or given directly by id.
+
+    Runs mirrored from the cluster are deleted there too, or the next sync would
+    bring them back. A sync first finds the runs it has finished since the last.
+    """
     parser = argparse.ArgumentParser(prog="run.py delete")
     parser.add_argument("--component", default=None)
     parser.add_argument("--seed", dest="seeds", type=int, nargs="+", default=None)
@@ -234,6 +240,17 @@ def _delete(experiment: Experiment, argv: list[str]) -> None:
     parser.add_argument("--yes", action="store_true")
     _add_override_flag(parser)
     args = parser.parse_args(argv)
+
+    mirrored = (experiment.results_dir / _CLUSTER_MIRROR).is_dir()
+    if mirrored and args.yes and slurm.is_queued(
+        label=experiment.name, config_path=cluster.config
+    ):
+        raise SystemExit(
+            f"[{experiment.name}] jobs are still queued on the cluster and could "
+            "store these runs again; delete once they finish"
+        )
+    if mirrored:
+        slurm.fetch(experiment, config_path=cluster.config)
 
     component, targets = _delete_targets(experiment, args)
 
@@ -247,6 +264,12 @@ def _delete(experiment: Experiment, argv: list[str]) -> None:
         print(f"{label} {len(targets)} run(s); pass --yes to delete")
         return
 
+    on_cluster = sorted(set(targets) & _mirrored_runs(experiment, component))
+    if on_cluster:
+        removed = slurm.delete_runs(
+            experiment, component, on_cluster, config_path=cluster.config
+        )
+        print(f"{label} deleted {removed} run(s) on the cluster")
     removed = delete_runs(experiment, component, targets)
     print(f"{label} deleted {removed} run(s)")
 
@@ -696,6 +719,6 @@ def run(
     elif mode == "status":
         _status(experiment, cluster, rest)
     elif mode == "delete":
-        _delete(experiment, rest)
+        _delete(experiment, cluster, rest)
     elif mode == "migrate":
         _migrate(experiment, rest)

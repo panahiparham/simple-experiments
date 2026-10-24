@@ -403,6 +403,14 @@ def delete_runs(experiment: Experiment, component: str, run_ids: Sequence[str]) 
     return len(removed)
 
 
+def _mirrored_runs(experiment: Experiment, component: str) -> set[str]:
+    """The runs of a component that another machine stored, as mirrored here."""
+    query = f'SELECT run_id FROM "{component}"'
+    return {
+        run for path in _mirrored_paths(experiment) for (run,) in _query_ro(path, query)
+    }
+
+
 def clear_results(experiment: Experiment) -> None:
     """Remove an experiment's merged database and every part.
 
