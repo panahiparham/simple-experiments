@@ -13,8 +13,9 @@ of runs.
 - Content-addressed run and config ids: extending a sweep by hyperparameter
   or by seed computes only the delta, and an interrupted sweep resumes where
   it stopped
-- One SQLite database per experiment, with per-worker part files merged
-  safely after a concurrent sweep
+- One SQLite database per component, one row per run and one compressed row
+  per metric, with per-worker part files merged safely after a concurrent
+  sweep
 - One CLI (`status`, `single`, `sweep`, `sync`, `queue`, `logs`) shared
   between local and SLURM execution
 - Depends only on numpy and polars - no jax, no matplotlib, no plotting
@@ -93,8 +94,9 @@ if __name__ == "__main__":
 ```
 
 The shard function's only contract is `(configs, seeds) -> one result per
-run`, in the order given. It can loop, vectorise, or call out elsewhere -
-the harness does not care.
+run`, in the order given. A result maps metric names to arrays, and each
+metric is stored and loaded on its own. The function can loop, vectorise, or
+call out elsewhere - the harness does not care.
 
 ```bash
 run.py status                        # runs done, runs pending, shards pending
@@ -306,7 +308,7 @@ scheduler does not track job or publish identity beyond that.
 | `experiment.hypers` | dotted paths, `traced`, the traced/static split |
 | `experiment.identity` | `config_id` and `run_id` |
 | `experiment.plan` | sweep expansion, shards, planning, worker assignment |
-| `experiment.results` | the SQLite store, parts, merging, the read API |
+| `experiment.results` | the per-component store, parts, mirrors, the read API |
 | `experiment.runner` | the loop that hands shards to the shard function |
 | `experiment.commands` | `run`, the CLI every `run.py` shares |
 | `experiment.slurm` | cluster dispatch, fetch, queue, logs, and `setup` |
