@@ -24,9 +24,7 @@ from experiment.results import (
     completed,
     database_path,
     delete_runs,
-    load_array,
     load_metric,
-    load_result,
     load_runs,
     merge_parts,
 )
@@ -140,7 +138,7 @@ def test_a_run_may_produce_nothing(experiment):
     with ResultWriter(experiment, "0") as writer:
         writer.save(shard, [{} for _ in shard.runs])
     run = shard.runs[0]
-    assert load_result(experiment, shard.component, run.id) == {}
+    assert load_metric(experiment, shard.component, "reward", [run.id]) == [None]
     assert run.id in completed(experiment)[shard.component]
 
 
@@ -216,7 +214,8 @@ def test_deleting_a_run_removes_its_arrays(experiment):
     merge_parts(experiment)
     run_id = next(iter(completed(experiment)["a"]))
     delete_runs(experiment, "a", [run_id])
-    assert load_result(experiment, "a", run_id) == {}
+    query = "SELECT name FROM metrics WHERE run_id = ?"
+    assert _query_ro(database_path(experiment, "a"), query, (run_id,)) == []
 
 
 def test_deleting_leaves_other_runs_and_components_untouched(experiment):
@@ -315,27 +314,6 @@ def test_components_are_read_separately(experiment):
     assert load_runs(experiment, "b")["NAME"].to_list() == ["ddqn", "ddqn"]
 
 
-def test_a_runs_arrays_load_back_unchanged(experiment):
-    run_everything(experiment)
-    merge_parts(experiment)
-    for run_id in load_runs(experiment, "a")["run_id"]:
-        stored = load_result(experiment, "a", run_id)
-        assert set(stored) == {"reward"}
-        assert stored["reward"].shape == (4,)
-
-
-def test_one_array_can_be_loaded_by_name(experiment):
-    run_everything(experiment)
-    run_id = load_runs(experiment, "a")["run_id"][0]
-    assert load_array(experiment, "a", run_id, "reward") is not None
-    assert load_array(experiment, "a", run_id, "absent") is None
-
-
-def test_an_unknown_run_reads_as_nothing(experiment):
-    run_everything(experiment)
-    assert load_result(experiment, "a", "nosuchrun") == {}
-
-
 def test_a_database_that_is_not_there_reads_as_empty(experiment):
     assert _query_ro(database_path(experiment, "a"), "SELECT run_id FROM runs") == []
 
@@ -370,7 +348,8 @@ def test_a_mirrored_sweep_in_flight_counts_as_completed(experiment):
 def test_mirrored_runs_load_back(experiment):
     run_everything(mirror(experiment, "cluster"))
     run_id = load_runs(experiment, "a")["run_id"][0]
-    assert load_array(experiment, "a", run_id, "reward") is not None
+    [loaded] = load_metric(experiment, "a", "reward", [run_id])
+    assert loaded is not None
 
 
 def test_a_run_both_here_and_mirrored_loads_once(experiment):

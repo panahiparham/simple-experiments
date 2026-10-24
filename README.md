@@ -150,17 +150,18 @@ It syncs first, and refuses while the experiment's jobs are still queued.
 ### Access results
 
 ```python
-from experiment import load_result, load_runs
+from experiment import load_metric, load_runs
 
 df = load_runs(EXPERIMENT, "tuned")  # run_id, config_id, seed, OPTIMIZER.LR, ...
-for run_id, lr in zip(df["run_id"], df["OPTIMIZER.LR"]):
-    result = load_result(EXPERIMENT, "tuned", run_id)
-    print(lr, result["final_x"])
+final_x = load_metric(EXPERIMENT, "tuned", "final_x", df["run_id"].to_list())
+for lr, x in zip(df["OPTIMIZER.LR"], final_x):
+    print(lr, x)
 ```
 
 `load_runs` returns a polars DataFrame with one row per run, its config
-flattened to dotted columns, but not the result itself - that stays a
-binary blob until `load_result` or `load_array` reads one run's back.
+flattened to dotted columns, but not what the runs produced. `load_metric`
+loads one metric of the runs asked for, in their order, with `None` for a run
+that did not produce it. It raises `KeyError` for a run id that is not stored.
 
 ## Setting up on a cluster
 

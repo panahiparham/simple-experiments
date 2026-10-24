@@ -47,9 +47,7 @@ __all__ = [
     "completed",
     "database_path",
     "delete_runs",
-    "load_array",
     "load_metric",
-    "load_result",
     "load_runs",
     "merge_parts",
 ]
@@ -442,27 +440,6 @@ def load_runs(experiment: Experiment, component: str) -> pl.DataFrame:
     return frame.select([*keys, *[c for c in frame.columns if c not in keys]])
 
 
-def load_result(
-    experiment: Experiment, component: str, run_id: str
-) -> dict[str, np.ndarray]:
-    """Load everything one run produced.
-
-    Args:
-        experiment: The experiment to read.
-        component: The component the run belongs to.
-        run_id: The run to load.
-
-    Returns:
-        The run's named arrays, empty if it stored none.
-    """
-    query = "SELECT name, value FROM metrics WHERE run_id = ?"
-    for path in _database_paths(experiment, component):
-        rows = _query_ro(path, query, (run_id,))
-        if rows:
-            return {name: _from_blob(value) for name, value in rows}
-    return {}
-
-
 def load_metric(
     experiment: Experiment, component: str, name: str, run_ids: Sequence[str]
 ) -> list[np.ndarray | None]:
@@ -498,20 +475,3 @@ def load_metric(
     if missing:
         raise KeyError(f"{component!r} has no stored run(s) {missing}")
     return [_from_blob(blobs[run]) if run in blobs else None for run in run_ids]
-
-
-def load_array(
-    experiment: Experiment, component: str, run_id: str, name: str
-) -> np.ndarray | None:
-    """Load one named array from a run's result.
-
-    Args:
-        experiment: The experiment to read.
-        component: The component the run belongs to.
-        run_id: The run to load.
-        name: The array to load.
-
-    Returns:
-        The array, or ``None`` if the run has no such array.
-    """
-    return load_result(experiment, component, run_id).get(name)
