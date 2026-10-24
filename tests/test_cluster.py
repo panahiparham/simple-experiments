@@ -10,7 +10,7 @@ import pytest
 
 from experiment import slurm
 from experiment.design import Component, Experiment, SlurmResources
-from experiment.results import completed
+from experiment.results import _connect_write, _ensure_table, _query_ro, completed
 
 
 @pytest.fixture(autouse=True)
@@ -846,6 +846,68 @@ def test_push_compresses_the_transfer(cluster, tmp_path, rsync_calls):
 
     [argv] = rsync_calls
     assert "z" in argv[1], f"rsync ran as {argv}"
+
+
+def store(path: Path, component: str, *run_ids: str) -> None:
+    conn = _connect_write(path)
+    _ensure_table(conn, component)
+    conn.executemany(
+        f'INSERT INTO "{component}" VALUES (?, ?, ?, ?, ?)',
+        [(run_id, "cfg", 0, "{}", None) for run_id in run_ids],
+    )
+    conn.commit()
+    conn.close()
+
+
+@pytest.fixture
+def remote_results(cluster) -> Path:
+    return cluster() / "results" / "toy"
+
+
+def test_deleting_on_the_cluster_reaches_its_database_and_parts(remote_results):
+    store(remote_results / "toy.db", "a", "r0", "r1")
+    store(remote_results / "toy.parts" / "part-0.db", "a", "r2")
+
+    removed = slurm.delete_runs(experiment_at(Path("unused")), "a", ["r0", "r2"])
+
+    assert removed == 2
+    assert completed(experiment_at(remote_results))["a"] == {"r1"}
+
+
+def test_deleting_on_the_cluster_reaches_the_pushed_copy(remote_results):
+    store(remote_results / "local" / "toy.db", "a", "r0")
+
+    slurm.delete_runs(experiment_at(Path("unused")), "a", ["r0"])
+
+    assert completed(experiment_at(remote_results))["a"] == set()
+
+
+def test_a_run_stored_twice_on_the_cluster_is_deleted_once(remote_results):
+    store(remote_results / "toy.db", "a", "r0")
+    store(remote_results / "local" / "toy.db", "a", "r0")
+
+    assert slurm.delete_runs(experiment_at(Path("unused")), "a", ["r0"]) == 1
+
+
+def test_deleting_on_the_cluster_leaves_other_components_alone(remote_results):
+    store(remote_results / "toy.db", "a", "r0")
+    store(remote_results / "toy.db", "b", "r0")
+
+    slurm.delete_runs(experiment_at(Path("unused")), "a", ["r0"])
+
+    rows = _query_ro(remote_results / "toy.db", 'SELECT run_id FROM "b"')
+    assert rows == [("r0",)]
+
+
+def test_deleting_unknown_runs_on_the_cluster_removes_nothing(remote_results):
+    store(remote_results / "toy.db", "a", "r0")
+
+    assert slurm.delete_runs(experiment_at(Path("unused")), "a", ["nosuchrun"]) == 0
+    assert completed(experiment_at(remote_results))["a"] == {"r0"}
+
+
+def test_deleting_no_runs_never_contacts_the_cluster(tmp_path):
+    assert slurm.delete_runs(experiment_at(tmp_path), "a", []) == 0
 
 
 @pytest.mark.parametrize(
