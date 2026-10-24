@@ -48,6 +48,7 @@ __all__ = [
     "database_path",
     "delete_runs",
     "load_array",
+    "load_metric",
     "load_result",
     "load_runs",
     "merge_parts",
@@ -460,6 +461,43 @@ def load_result(
         if rows:
             return {name: _from_blob(value) for name, value in rows}
     return {}
+
+
+def load_metric(
+    experiment: Experiment, component: str, name: str, run_ids: Sequence[str]
+) -> list[np.ndarray | None]:
+    """Load one metric of several runs.
+
+    Args:
+        experiment: The experiment to read.
+        component: The component the runs belong to.
+        name: The metric to load.
+        run_ids: The runs to load it for.
+
+    Returns:
+        One array per run, in ``run_ids`` order, ``None`` where a run stored no
+        such metric.
+
+    Raises:
+        KeyError: If the component has no stored run with one of the ids.
+    """
+    placeholders = ", ".join("?" for _ in run_ids)
+    runs_query = f"SELECT run_id FROM runs WHERE run_id IN ({placeholders})"
+    metric_query = (
+        "SELECT run_id, value FROM metrics "
+        f"WHERE name = ? AND run_id IN ({placeholders})"
+    )
+    known: set[str] = set()
+    blobs: dict[str, bytes] = {}
+    for path in _database_paths(experiment, component):
+        known.update(run for (run,) in _query_ro(path, runs_query, tuple(run_ids)))
+        for run, blob in _query_ro(path, metric_query, (name, *run_ids)):
+            blobs.setdefault(run, blob)
+
+    missing = [run for run in run_ids if run not in known]
+    if missing:
+        raise KeyError(f"{component!r} has no stored run(s) {missing}")
+    return [_from_blob(blobs[run]) if run in blobs else None for run in run_ids]
 
 
 def load_array(
