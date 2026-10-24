@@ -348,7 +348,7 @@ def test_an_empty_share_writes_no_part(experiment, tmp_path):
         experiment, process,
         ["sweep", "--plan", str(path), "--worker-index", str(empty)],
     )
-    assert not (tmp_path / "toy.parts" / f"part-{empty}.db").exists()
+    assert not list((tmp_path / "toy.parts").rglob(f"part-{empty}.db"))
 
 
 # --- status -----------------------------------------------------------------

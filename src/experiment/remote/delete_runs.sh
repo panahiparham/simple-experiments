@@ -12,16 +12,13 @@ from pathlib import Path
 
 results, component, *run_ids = sys.argv[1:]
 placeholders = ", ".join("?" for _ in run_ids)
+where = f"FROM runs WHERE run_id IN ({placeholders})"
+paths = [*Path(results).rglob(f"{component}.db")]
+paths += Path(results).rglob(f"*.parts/{component}/part-*.db")
 removed = set()
-for path in sorted(Path(results).rglob("*.db")):
+for path in sorted(paths):
     conn = sqlite3.connect(str(path), timeout=60.0)
     try:
-        tables = {name for (name,) in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        )}
-        if component not in tables:
-            continue
-        where = f'FROM "{component}" WHERE run_id IN ({placeholders})'
         found = conn.execute(f"SELECT run_id {where}", run_ids)
         removed.update(run for (run,) in found)
         conn.execute(f"DELETE {where}", run_ids)

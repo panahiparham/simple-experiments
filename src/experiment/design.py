@@ -3,9 +3,9 @@
 A research project has several experiments. An :class:`Experiment` is one
 self-contained unit of work: a name, the directory its results live in, and one
 or more :class:`Component` s. A component defines a set of runs - a base config,
-a sweep over it, and the seeds to run each point at - and owns its own table in
-the experiment's database, so components that vary in ways a sweep cannot express
-are collected and analysed separately.
+a sweep over it, and the seeds to run each point at - and owns its own database
+in the experiment's results, so components that vary in ways a sweep cannot
+express are collected and analysed separately.
 
 An experiment's name is stable and identifier-like, as is a component's name:
 both become filenames and SQL identifiers.
@@ -107,7 +107,7 @@ class Experiment:
         name: Identifies the experiment, and names its database.
         components: The components making up the experiment, in the order they
             are run.
-        results_dir: The directory holding the experiment's database.
+        results_dir: The directory holding the experiment's databases.
         slurm: The resources this experiment's jobs ask for on top of the
             cluster config's ``[slurm]`` defaults.
     """

@@ -71,13 +71,21 @@ def run_everything(experiment: Experiment, num_workers: int = 1) -> None:
 # --- layout -----------------------------------------------------------------
 
 
-def test_the_database_is_named_after_the_experiment(experiment):
-    assert database_path(experiment).name == "toy.db"
+def test_each_database_is_named_after_its_component(experiment):
+    assert database_path(experiment, "a").name == "a.db"
 
 
-def test_parts_sit_beside_the_database(experiment):
-    assert _part_path(experiment, "0").parent == _parts_dir(experiment)
+def test_parts_sit_in_the_experiments_parts_directory(experiment):
+    part = _part_path(experiment, "a", "0")
+    assert part.is_relative_to(_parts_dir(experiment))
     assert _parts_dir(experiment).parent == experiment.results_dir
+
+
+def test_each_component_is_merged_into_its_own_database(experiment):
+    run_everything(experiment)
+    merge_parts(experiment)
+    stored = sorted(p.name for p in experiment.results_dir.glob("*.db"))
+    assert stored == ["a.db", "b.db"]
 
 
 # --- writing ----------------------------------------------------------------
@@ -90,7 +98,7 @@ def test_an_empty_store_has_completed_nothing(experiment):
 def test_a_worker_with_no_work_writes_no_file(experiment):
     writer = ResultWriter(experiment, "0")
     writer.close()
-    assert not writer.path.exists()
+    assert not _parts_dir(experiment).exists()
 
 
 def test_saved_runs_are_reported_as_completed(experiment):
@@ -141,8 +149,8 @@ def test_a_redundant_result_is_stored_compressed(experiment):
     with ResultWriter(experiment, "0") as writer:
         writer.save(shard, [arrays for _ in shard.runs])
     stored = _query_ro(
-        writer.path,
-        f'SELECT result FROM "{shard.component}" WHERE run_id = ?',
+        _part_path(experiment, shard.component, "0"),
+        "SELECT result FROM runs WHERE run_id = ?",
         (shard.runs[0].id,),
     )[0][0]
     assert len(stored) < arrays["reward"].nbytes / 10, (
@@ -256,6 +264,13 @@ def test_clearing_removes_merged_and_unmerged_runs(experiment):
     assert completed(experiment) == {"a": set(), "b": set()}
 
 
+def test_clearing_removes_components_no_longer_declared(experiment):
+    run_everything(experiment)
+    merge_parts(experiment)
+    clear_results(dataclasses.replace(experiment, components=experiment.components[:1]))
+    assert completed(experiment) == {"a": set(), "b": set()}
+
+
 def test_clearing_an_empty_store_is_a_no_op(experiment):
     clear_results(experiment)
     assert completed(experiment) == {"a": set(), "b": set()}
@@ -313,14 +328,14 @@ def test_an_unknown_run_reads_as_nothing(experiment):
 
 
 def test_a_database_that_is_not_there_reads_as_empty(experiment):
-    assert _query_ro(database_path(experiment), 'SELECT run_id FROM "a"') == []
+    assert _query_ro(database_path(experiment, "a"), "SELECT run_id FROM runs") == []
 
 
 def test_a_query_with_the_wrong_binding_count_is_not_swallowed(experiment):
     run_everything(experiment)
     merge_parts(experiment)
     with pytest.raises(sqlite3.ProgrammingError):
-        _query_ro(database_path(experiment), 'SELECT * FROM "a" WHERE run_id = ?')
+        _query_ro(database_path(experiment, "a"), "SELECT * FROM runs WHERE run_id = ?")
 
 
 # --- mirrors ----------------------------------------------------------------

@@ -134,7 +134,7 @@ With `--slurm`, the results are deleted both locally and on the cluster.
 ### Sync with the cluster
 
 `run.py sync` mirrors the cluster's results into `results/cluster/`, and
-`run.py sync --push` mirrors the local database into `local/` in the cluster's
+`run.py sync --push` mirrors the local databases into `local/` in the cluster's
 results. Each side reads the other's mirror along with its own results, so a
 run stored on either counts as done and loads the same way, including runs of
 a sweep still in progress. Each sync sends only what changed.

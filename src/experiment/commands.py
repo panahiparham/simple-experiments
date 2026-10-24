@@ -601,7 +601,7 @@ def _sync(experiment: Experiment, cluster: _Cluster, argv: list[str]) -> None:
     parser.add_argument(
         "--push",
         action="store_true",
-        help="send the local database to the cluster instead of fetching",
+        help="send the local databases to the cluster instead of fetching",
     )
     args = parser.parse_args(argv)
 
