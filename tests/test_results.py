@@ -25,6 +25,7 @@ from experiment.results import (
     database_path,
     delete_runs,
     load_array,
+    load_metric,
     load_result,
     load_runs,
     merge_parts,
@@ -387,3 +388,74 @@ def test_merging_leaves_a_mirror_in_place(experiment):
 def test_an_unknown_directory_is_not_read_as_a_mirror(experiment):
     run_everything(mirror(experiment, "elsewhere"))
     assert completed(experiment) == {"a": set(), "b": set()}
+
+
+# --- loading metrics --------------------------------------------------------
+
+
+def run_ids_by_seed(experiment: Experiment, component: str) -> list[str]:
+    return load_runs(experiment, component).sort("seed")["run_id"].to_list()
+
+
+def test_a_metric_loads_one_array_per_run_in_the_order_asked(experiment):
+    run_everything(experiment)
+    merge_parts(experiment)
+    run_ids = run_ids_by_seed(experiment, "a")[::-1]
+
+    loaded = load_metric(experiment, "a", "reward", run_ids)
+
+    assert [array.tolist() for array in loaded] == [
+        [2.0, 3.0, 4.0, 5.0], [1.0, 2.0, 3.0, 4.0], [0.0, 1.0, 2.0, 3.0]
+    ]
+
+
+def test_a_metric_keeps_its_dtype_and_shape(experiment):
+    shard = plan_experiment(experiment)[0]
+    padded = np.arange(6, dtype=np.int32).reshape(2, 3)
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [{"lengths": padded} for _ in shard.runs])
+
+    [loaded] = load_metric(experiment, shard.component, "lengths", [shard.runs[0].id])
+
+    assert loaded is not None
+    assert loaded.dtype == np.int32
+    assert np.array_equal(loaded, padded)
+
+
+def test_a_run_without_the_metric_loads_as_none(experiment):
+    run_everything(experiment)
+    run_ids = run_ids_by_seed(experiment, "a")
+
+    assert load_metric(experiment, "a", "absent", run_ids) == [None, None, None]
+
+
+def test_loading_a_metric_of_an_unknown_run_is_refused(experiment):
+    run_everything(experiment)
+    run_ids = [*run_ids_by_seed(experiment, "a"), "nosuchrun"]
+
+    with pytest.raises(KeyError, match="nosuchrun"):
+        load_metric(experiment, "a", "reward", run_ids)
+
+
+def test_a_run_of_another_component_is_unknown(experiment):
+    run_everything(experiment)
+    run_ids = run_ids_by_seed(experiment, "b")
+
+    with pytest.raises(KeyError):
+        load_metric(experiment, "a", "reward", run_ids)
+
+
+def test_loading_a_metric_of_no_runs_gives_nothing(experiment):
+    assert load_metric(experiment, "a", "reward", []) == []
+
+
+def test_a_metric_loads_across_parts_and_mirrors(experiment):
+    plan = plan_experiment(experiment)
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(plan[0], [result(r.seed) for r in plan[0].runs])
+    run_everything(mirror(experiment, "cluster"))
+    run_ids = run_ids_by_seed(experiment, "a")
+
+    loaded = load_metric(experiment, "a", "reward", run_ids)
+
+    assert [array[0] for array in loaded] == [0.0, 1.0, 2.0]
