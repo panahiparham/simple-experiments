@@ -103,8 +103,8 @@ run.py sweep --num-workers 6         # across 6 local worker processes
 run.py sweep --num-workers 6 --slurm # the same work as a SLURM array
 run.py sweep --parallel-shards 4     # each worker runs 4 shards at once
 run.py single --component tuned --seed 0
-run.py sync                          # bring the cluster's results home
-run.py sync --push                   # send local-only results there instead
+run.py sync                          # mirror the cluster's results here
+run.py sync --push                   # mirror the local results there
 run.py queue | logs                  # cluster only
 ```
 
@@ -130,6 +130,22 @@ run.py sweep --fresh --yes                              # every stored result
 ```
 
 With `--slurm`, the results are deleted both locally and on the cluster.
+
+### Sync with the cluster
+
+`run.py sync` mirrors the cluster's results into `results/cluster/`, and
+`run.py sync --push` mirrors the local database into `local/` in the cluster's
+results. Each side reads the other's mirror along with its own results, so a
+run stored on either counts as done and loads the same way, including runs of
+a sweep still in progress. Each sync sends only what changed.
+
+```bash
+run.py delete --component tuned --seed 0 --yes  # that seed's runs
+run.py delete --component tuned --yes           # every stored run of tuned
+```
+
+`run.py delete` also deletes the runs mirrored from the cluster on the cluster.
+It syncs first, and refuses while the experiment's jobs are still queued.
 
 ### Access results
 

@@ -9,8 +9,9 @@ from pathlib import Path
 import pytest
 
 from experiment import slurm
+from experiment.commands import run
 from experiment.design import Component, Experiment, SlurmResources
-from experiment.results import completed
+from experiment.results import _connect_write, _ensure_table, _query_ro, completed
 
 
 @pytest.fixture(autouse=True)
@@ -687,7 +688,7 @@ def test_mps_without_a_gpu_starts_no_server(cluster, repo, capsys):
     assert jobs_starting_mps(capsys.readouterr().out) == []
 
 
-def test_fetch_brings_the_clusters_database_home(cluster, tmp_path):
+def test_fetch_mirrors_the_clusters_database(cluster, tmp_path):
     remote = cluster() / "results" / "toy"
     remote.mkdir(parents=True)
     (remote / "toy.db").write_text("merged")
@@ -695,10 +696,10 @@ def test_fetch_brings_the_clusters_database_home(cluster, tmp_path):
 
     slurm.fetch(experiment_at(local))
 
-    assert (local / "toy.parts" / "part-cluster.db").read_text() == "merged"
+    assert (local / "cluster" / "toy.db").read_text() == "merged"
 
 
-def test_fetch_brings_a_sweeps_leftover_parts_home(cluster, tmp_path):
+def test_fetch_mirrors_a_sweeps_leftover_parts(cluster, tmp_path):
     remote = cluster() / "results" / "toy" / "toy.parts"
     remote.mkdir(parents=True)
     (remote / "part-0.db").write_text("worker zero")
@@ -706,7 +707,48 @@ def test_fetch_brings_a_sweeps_leftover_parts_home(cluster, tmp_path):
 
     slurm.fetch(experiment_at(local))
 
-    assert (local / "toy.parts" / "part-cluster-0.db").read_text() == "worker zero"
+    mirrored = local / "cluster" / "toy.parts" / "part-0.db"
+    assert mirrored.read_text() == "worker zero"
+
+
+def test_fetching_again_drops_parts_the_cluster_has_merged(cluster, tmp_path):
+    remote = cluster() / "results" / "toy"
+    (remote / "toy.parts").mkdir(parents=True)
+    (remote / "toy.parts" / "part-0.db").write_text("worker zero")
+    local = tmp_path / "local"
+    slurm.fetch(experiment_at(local))
+
+    (remote / "toy.parts" / "part-0.db").unlink()
+    (remote / "toy.db").write_text("merged")
+    slurm.fetch(experiment_at(local))
+
+    mirrored = sorted(p.relative_to(local) for p in local.rglob("*.db"))
+    assert mirrored == [Path("cluster/toy.db")]
+
+
+def test_fetch_leaves_the_local_results_alone(cluster, tmp_path):
+    remote = cluster() / "results" / "toy"
+    remote.mkdir(parents=True)
+    (remote / "toy.db").write_text("merged")
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "toy.db").write_text("local results")
+
+    slurm.fetch(experiment_at(local))
+
+    assert (local / "toy.db").read_text() == "local results"
+
+
+def test_fetch_skips_the_clusters_copy_of_local_results(cluster, tmp_path):
+    remote = cluster() / "results" / "toy"
+    (remote / "local").mkdir(parents=True)
+    (remote / "local" / "toy.db").write_text("pushed")
+    (remote / "toy.db").write_text("merged")
+    local = tmp_path / "local"
+
+    slurm.fetch(experiment_at(local))
+
+    assert not (local / "cluster" / "local").exists()
 
 
 @pytest.fixture
@@ -762,7 +804,7 @@ def test_fetch_from_an_empty_results_dir_is_refused(cluster, tmp_path):
         slurm.fetch(experiment_at(tmp_path / "local"))
 
 
-def test_push_lands_the_local_database_as_a_part(cluster, tmp_path):
+def test_push_mirrors_the_local_database(cluster, tmp_path):
     root = cluster()
     local = tmp_path / "local"
     local.mkdir()
@@ -770,8 +812,22 @@ def test_push_lands_the_local_database_as_a_part(cluster, tmp_path):
 
     slurm.push(experiment_at(local))
 
-    pushed = root / "results" / "toy" / "toy.parts" / "part-local.db"
+    pushed = root / "results" / "toy" / "local" / "toy.db"
     assert pushed.read_text() == "local results"
+
+
+def test_pushing_again_replaces_the_clusters_copy(cluster, tmp_path):
+    root = cluster()
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "toy.db").write_text("local results")
+    slurm.push(experiment_at(local))
+
+    (local / "toy.db").write_text("pruned")
+    slurm.push(experiment_at(local))
+
+    pushed = root / "results" / "toy" / "local" / "toy.db"
+    assert pushed.read_text() == "pruned"
 
 
 def test_push_without_a_local_database_is_refused(cluster, tmp_path):
@@ -793,18 +849,138 @@ def test_push_compresses_the_transfer(cluster, tmp_path, rsync_calls):
     assert "z" in argv[1], f"rsync ran as {argv}"
 
 
-def test_a_push_then_fetch_brings_back_the_same_rows(cluster, tmp_path):
-    cluster()
+def store(path: Path, component: str, *run_ids: str) -> None:
+    conn = _connect_write(path)
+    _ensure_table(conn, component)
+    conn.executemany(
+        f'INSERT INTO "{component}" VALUES (?, ?, ?, ?, ?)',
+        [(run_id, "cfg", 0, "{}", None) for run_id in run_ids],
+    )
+    conn.commit()
+    conn.close()
+
+
+@pytest.fixture
+def remote_results(cluster) -> Path:
+    return cluster() / "results" / "toy"
+
+
+def test_deleting_on_the_cluster_reaches_its_database_and_parts(remote_results):
+    store(remote_results / "toy.db", "a", "r0", "r1")
+    store(remote_results / "toy.parts" / "part-0.db", "a", "r2")
+
+    removed = slurm.delete_runs(experiment_at(Path("unused")), "a", ["r0", "r2"])
+
+    assert removed == 2
+    assert completed(experiment_at(remote_results))["a"] == {"r1"}
+
+
+def test_deleting_on_the_cluster_reaches_the_pushed_copy(remote_results):
+    store(remote_results / "local" / "toy.db", "a", "r0")
+
+    slurm.delete_runs(experiment_at(Path("unused")), "a", ["r0"])
+
+    assert completed(experiment_at(remote_results))["a"] == set()
+
+
+def test_a_run_stored_twice_on_the_cluster_is_deleted_once(remote_results):
+    store(remote_results / "toy.db", "a", "r0")
+    store(remote_results / "local" / "toy.db", "a", "r0")
+
+    assert slurm.delete_runs(experiment_at(Path("unused")), "a", ["r0"]) == 1
+
+
+def test_deleting_on_the_cluster_leaves_other_components_alone(remote_results):
+    store(remote_results / "toy.db", "a", "r0")
+    store(remote_results / "toy.db", "b", "r0")
+
+    slurm.delete_runs(experiment_at(Path("unused")), "a", ["r0"])
+
+    rows = _query_ro(remote_results / "toy.db", 'SELECT run_id FROM "b"')
+    assert rows == [("r0",)]
+
+
+def test_deleting_unknown_runs_on_the_cluster_removes_nothing(remote_results):
+    store(remote_results / "toy.db", "a", "r0")
+
+    assert slurm.delete_runs(experiment_at(Path("unused")), "a", ["nosuchrun"]) == 0
+    assert completed(experiment_at(remote_results))["a"] == {"r0"}
+
+
+def test_deleting_no_runs_never_contacts_the_cluster(tmp_path):
+    assert slurm.delete_runs(experiment_at(tmp_path), "a", []) == 0
+
+
+@pytest.fixture
+def squeue(tmp_path, repo, monkeypatch):
+    def install(*, queued: bool) -> None:
+        bin_dir = tmp_path / "squeue-bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "squeue"
+        fake.write_text("#!/bin/sh\n" + ("echo 1 RUNNING\n" if queued else ""))
+        fake.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+        state = repo / ".cluster" / "toy.json"
+        state.parent.mkdir(exist_ok=True)
+        state.write_text('{"runid": "toy_x", "jobs": {"sweep": "1"}}')
+
+    return install
+
+
+def delete(local: Path, *args: str) -> None:
+    run(experiment_at(local), lambda configs, seeds: [], ["delete", *args])
+
+
+def test_deleting_a_mirrored_run_deletes_it_on_the_cluster(
+    remote_results, squeue, tmp_path
+):
+    store(remote_results / "toy.db", "a", "r0", "r1")
     local = tmp_path / "local"
-    local.mkdir()
-    (local / "toy.db").write_text("local results")
-
-    slurm.push(experiment_at(local))
-    (local / "toy.db").unlink()
     slurm.fetch(experiment_at(local))
+    squeue(queued=False)
 
-    parts = [p.read_text() for p in (local / "toy.parts").glob("part-*.db")]
-    assert parts == ["local results"]
+    delete(local, "--component", "a", "--run-id", "r0", "--yes")
+
+    assert completed(experiment_at(remote_results))["a"] == {"r1"}
+    assert completed(experiment_at(local))["a"] == {"r1"}
+
+
+def test_deleting_reaches_runs_finished_since_the_last_sync(
+    remote_results, squeue, tmp_path
+):
+    store(remote_results / "toy.db", "a", "r0")
+    local = tmp_path / "local"
+    slurm.fetch(experiment_at(local))
+    store(remote_results / "toy.parts" / "part-0.db", "a", "r1")
+    squeue(queued=False)
+
+    delete(local, "--component", "a", "--yes")
+
+    assert completed(experiment_at(remote_results))["a"] == set()
+
+
+def test_deleting_while_jobs_are_queued_is_refused(remote_results, squeue, tmp_path):
+    store(remote_results / "toy.db", "a", "r0")
+    local = tmp_path / "local"
+    slurm.fetch(experiment_at(local))
+    squeue(queued=True)
+
+    with pytest.raises(SystemExit, match="still queued"):
+        delete(local, "--component", "a", "--run-id", "r0", "--yes")
+    assert completed(experiment_at(remote_results))["a"] == {"r0"}
+
+
+def test_previewing_a_delete_while_jobs_are_queued_is_allowed(
+    remote_results, squeue, tmp_path, capsys
+):
+    store(remote_results / "toy.db", "a", "r0")
+    local = tmp_path / "local"
+    slurm.fetch(experiment_at(local))
+    squeue(queued=True)
+
+    delete(local, "--component", "a", "--run-id", "r0")
+
+    assert "would delete r0" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

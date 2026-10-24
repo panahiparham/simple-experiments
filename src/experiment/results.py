@@ -9,13 +9,16 @@ filesystem it is worse, so a worker never writes the experiment's database
 directly. It writes its own part beside it, and the parts are merged in at the
 end of a sweep. Reads always union the database with any parts still present, so
 results from a sweep that was interrupted before its merge are still visible and
-still count as done.
+still count as done. Reads also take in the other machine's results, mirrored
+under ``cluster/`` locally or ``local/`` on the cluster.
 
     results/
         pinball.db              # merged: one table per component
         pinball.parts/
             part-0.db           # transient, one per worker
             part-1.db
+        cluster/                # read-only mirror of the cluster's results/
+            pinball.db
 """
 
 from __future__ import annotations
@@ -59,6 +62,11 @@ CREATE TABLE IF NOT EXISTS "{component}" (
 """
 _COLUMNS = "run_id, config_id, seed, config, result"
 
+# Each machine keeps a read-only copy of the other's results: the cluster's
+# under ``cluster/`` locally, and the local machine's under ``local/`` there.
+_CLUSTER_MIRROR = "cluster"
+_LOCAL_MIRROR = "local"
+
 
 def database_path(experiment: Experiment) -> Path:
     """The experiment's merged database.
@@ -88,10 +96,21 @@ def _part_paths(experiment: Experiment) -> list[Path]:
     return sorted(parts.glob("part-*.db")) if parts.is_dir() else []
 
 
+def _mirrored_paths(experiment: Experiment) -> list[Path]:
+    """Every database mirrored from another machine, in a stable order."""
+    paths: list[Path] = []
+    for mirror in (_CLUSTER_MIRROR, _LOCAL_MIRROR):
+        root = experiment.results_dir / mirror
+        paths += sorted(root.glob(f"{experiment.name}.db"))
+        paths += sorted(root.glob(f"{experiment.name}.parts/part-*.db"))
+    return paths
+
+
 def _database_paths(experiment: Experiment) -> list[Path]:
-    """Every database holding results: the merged one, then any parts."""
+    """Every database holding results: the merged one, any parts, then mirrors."""
     merged = database_path(experiment)
-    return ([merged] if merged.exists() else []) + _part_paths(experiment)
+    own = ([merged] if merged.exists() else []) + _part_paths(experiment)
+    return own + _mirrored_paths(experiment)
 
 
 def _connect_write(path: str | Path) -> sqlite3.Connection:
@@ -382,6 +401,14 @@ def delete_runs(experiment: Experiment, component: str, run_ids: Sequence[str]) 
             conn.close()
         removed.update(run for (run,) in rows)
     return len(removed)
+
+
+def _mirrored_runs(experiment: Experiment, component: str) -> set[str]:
+    """The runs of a component that another machine stored, as mirrored here."""
+    query = f'SELECT run_id FROM "{component}"'
+    return {
+        run for path in _mirrored_paths(experiment) for (run,) in _query_ro(path, query)
+    }
 
 
 def clear_results(experiment: Experiment) -> None:

@@ -321,3 +321,46 @@ def test_a_query_with_the_wrong_binding_count_is_not_swallowed(experiment):
     merge_parts(experiment)
     with pytest.raises(sqlite3.ProgrammingError):
         _query_ro(database_path(experiment), 'SELECT * FROM "a" WHERE run_id = ?')
+
+
+# --- mirrors ----------------------------------------------------------------
+
+
+def mirror(experiment: Experiment, name: str) -> Experiment:
+    """The same experiment as the other machine stores it, mirrored here."""
+    return dataclasses.replace(experiment, results_dir=experiment.results_dir / name)
+
+
+@pytest.mark.parametrize("name", ["cluster", "local"])
+def test_mirrored_runs_count_as_completed(experiment, name):
+    run_everything(mirror(experiment, name))
+    merge_parts(mirror(experiment, name))
+    assert {k: len(v) for k, v in completed(experiment).items()} == {"a": 3, "b": 2}
+
+
+def test_a_mirrored_sweep_in_flight_counts_as_completed(experiment):
+    run_everything(mirror(experiment, "cluster"), num_workers=2)
+    assert len(completed(experiment)["a"]) == 3
+
+
+def test_mirrored_runs_load_back(experiment):
+    run_everything(mirror(experiment, "cluster"))
+    run_id = load_runs(experiment, "a")["run_id"][0]
+    assert load_array(experiment, "a", run_id, "reward") is not None
+
+
+def test_a_run_both_here_and_mirrored_loads_once(experiment):
+    run_everything(experiment)
+    run_everything(mirror(experiment, "cluster"))
+    assert load_runs(experiment, "a").height == 3
+
+
+def test_merging_leaves_a_mirror_in_place(experiment):
+    run_everything(mirror(experiment, "cluster"), num_workers=2)
+    assert merge_parts(experiment) == 0
+    assert len(completed(experiment)["a"]) == 3
+
+
+def test_an_unknown_directory_is_not_read_as_a_mirror(experiment):
+    run_everything(mirror(experiment, "elsewhere"))
+    assert completed(experiment) == {"a": set(), "b": set()}
