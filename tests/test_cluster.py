@@ -803,7 +803,7 @@ def test_fetch_from_an_empty_results_dir_is_refused(cluster, tmp_path):
         slurm.fetch(experiment_at(tmp_path / "local"))
 
 
-def test_push_lands_the_local_database_as_a_part(cluster, tmp_path):
+def test_push_mirrors_the_local_database(cluster, tmp_path):
     root = cluster()
     local = tmp_path / "local"
     local.mkdir()
@@ -811,8 +811,22 @@ def test_push_lands_the_local_database_as_a_part(cluster, tmp_path):
 
     slurm.push(experiment_at(local))
 
-    pushed = root / "results" / "toy" / "toy.parts" / "part-local.db"
+    pushed = root / "results" / "toy" / "local" / "toy.db"
     assert pushed.read_text() == "local results"
+
+
+def test_pushing_again_replaces_the_clusters_copy(cluster, tmp_path):
+    root = cluster()
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "toy.db").write_text("local results")
+    slurm.push(experiment_at(local))
+
+    (local / "toy.db").write_text("pruned")
+    slurm.push(experiment_at(local))
+
+    pushed = root / "results" / "toy" / "local" / "toy.db"
+    assert pushed.read_text() == "pruned"
 
 
 def test_push_without_a_local_database_is_refused(cluster, tmp_path):
@@ -832,20 +846,6 @@ def test_push_compresses_the_transfer(cluster, tmp_path, rsync_calls):
 
     [argv] = rsync_calls
     assert "z" in argv[1], f"rsync ran as {argv}"
-
-
-def test_a_push_then_fetch_brings_back_the_same_rows(cluster, tmp_path):
-    cluster()
-    local = tmp_path / "local"
-    local.mkdir()
-    (local / "toy.db").write_text("local results")
-
-    slurm.push(experiment_at(local))
-    (local / "toy.db").unlink()
-    slurm.fetch(experiment_at(local))
-
-    mirrored = [p.read_text() for p in (local / "cluster").rglob("*.db")]
-    assert mirrored == ["local results"]
 
 
 @pytest.mark.parametrize(

@@ -715,12 +715,11 @@ def fetch(experiment, *, config_path: str | Path | None = None) -> None:
 
 
 def push(experiment, *, config_path: str | Path | None = None) -> None:
-    """Copy the local database up as one more part beside the cluster's own.
+    """Mirror the local database into ``local/`` in the cluster's results.
 
-    Landing it as a part, not as the cluster's merged database, means nothing
-    there is ever overwritten: the cluster's own merge picks it up next, and
-    until then its ids already count as done, so a sweep dispatched afterwards
-    skips every run this covers instead of recomputing it.
+    Each push replaces that copy, so runs deleted here leave the cluster too,
+    and rsync sends only what changed. Reads there union it with the cluster's
+    own results, so a sweep dispatched afterwards skips every run it covers.
 
     Args:
         experiment: The experiment to push.
@@ -734,10 +733,9 @@ def push(experiment, *, config_path: str | Path | None = None) -> None:
     if not local.exists():
         raise SystemExit(f"[{experiment.name}] no local database at {local}")
 
-    remote = f"{_remote_root(cfg)}/results/{experiment.name}"
-    remote_parts = f"{remote}/{experiment.name}.parts"
-    _ssh(cfg, f"mkdir -p {shlex.quote(remote_parts)}")
-    dest = f"{remote_parts}/part-local.db"
+    mirror = f"{_remote_root(cfg)}/results/{experiment.name}/{_LOCAL_MIRROR}"
+    _ssh(cfg, f"mkdir -p {shlex.quote(mirror)}")
+    dest = f"{mirror}/{local.name}"
     proc = _run(["rsync", "-az", str(local), _remote_path(cfg, dest)])
     _check_auth(cfg, proc.stderr)
     if proc.returncode != 0:
