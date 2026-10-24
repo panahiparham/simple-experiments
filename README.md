@@ -13,8 +13,9 @@ of runs.
 - Content-addressed run and config ids: extending a sweep by hyperparameter
   or by seed computes only the delta, and an interrupted sweep resumes where
   it stopped
-- One SQLite database per experiment, with per-worker part files merged
-  safely after a concurrent sweep
+- One SQLite database per component, one row per run and one compressed row
+  per metric, with per-worker part files merged safely after a concurrent
+  sweep
 - One CLI (`status`, `single`, `sweep`, `sync`, `queue`, `logs`) shared
   between local and SLURM execution
 - Depends only on numpy and polars - no jax, no matplotlib, no plotting
@@ -93,8 +94,9 @@ if __name__ == "__main__":
 ```
 
 The shard function's only contract is `(configs, seeds) -> one result per
-run`, in the order given. It can loop, vectorise, or call out elsewhere -
-the harness does not care.
+run`, in the order given. A result maps metric names to arrays, and each
+metric is stored and loaded on its own. The function can loop, vectorise, or
+call out elsewhere - the harness does not care.
 
 ```bash
 run.py status                        # runs done, runs pending, shards pending
@@ -134,7 +136,7 @@ With `--slurm`, the results are deleted both locally and on the cluster.
 ### Sync with the cluster
 
 `run.py sync` mirrors the cluster's results into `results/cluster/`, and
-`run.py sync --push` mirrors the local database into `local/` in the cluster's
+`run.py sync --push` mirrors the local databases into `local/` in the cluster's
 results. Each side reads the other's mirror along with its own results, so a
 run stored on either counts as done and loads the same way, including runs of
 a sweep still in progress. Each sync sends only what changed.
@@ -150,17 +152,18 @@ It syncs first, and refuses while the experiment's jobs are still queued.
 ### Access results
 
 ```python
-from experiment import load_result, load_runs
+from experiment import load_metric, load_runs
 
 df = load_runs(EXPERIMENT, "tuned")  # run_id, config_id, seed, OPTIMIZER.LR, ...
-for run_id, lr in zip(df["run_id"], df["OPTIMIZER.LR"]):
-    result = load_result(EXPERIMENT, "tuned", run_id)
-    print(lr, result["final_x"])
+final_x = load_metric(EXPERIMENT, "tuned", "final_x", df["run_id"].to_list())
+for lr, x in zip(df["OPTIMIZER.LR"], final_x):
+    print(lr, x)
 ```
 
 `load_runs` returns a polars DataFrame with one row per run, its config
-flattened to dotted columns, but not the result itself - that stays a
-binary blob until `load_result` or `load_array` reads one run's back.
+flattened to dotted columns, but not what the runs produced. `load_metric`
+loads one metric of the runs asked for, in their order, with `None` for a run
+that did not produce it. It raises `KeyError` for a run id that is not stored.
 
 ## Setting up on a cluster
 
@@ -251,12 +254,6 @@ a clean tree nor the cluster.
 `EXPERIMENT_LOCAL_MODE=1` runs every "remote" command in a local shell,
 which is how the cluster flow is exercised without a cluster.
 
-## Migrating an older store
-
-An earlier layout kept one database per component. `run.py migrate` folds
-those into the experiment's database. Run ids are unchanged, so migrated
-runs still count as done. The old files are left in place.
-
 ## Scheduling a weekly benchmark
 
 `experiment.weekly` is a stateless scheduler for a benchmark that should run
@@ -311,11 +308,10 @@ scheduler does not track job or publish identity beyond that.
 | `experiment.hypers` | dotted paths, `traced`, the traced/static split |
 | `experiment.identity` | `config_id` and `run_id` |
 | `experiment.plan` | sweep expansion, shards, planning, worker assignment |
-| `experiment.results` | the SQLite store, parts, merging, the read API |
+| `experiment.results` | the per-component store, parts, mirrors, the read API |
 | `experiment.runner` | the loop that hands shards to the shard function |
 | `experiment.commands` | `run`, the CLI every `run.py` shares |
 | `experiment.slurm` | cluster dispatch, fetch, queue, logs, and `setup` |
-| `experiment.legacy` | one-shot migration from the per-component store |
 | `experiment.weekly` | stateless scheduler for a recurring benchmark run |
 
 ## Tests
@@ -326,7 +322,7 @@ uv run pytest
 
 `tests/` covers the harness with fake configs and a fake shard function:
 `test_hypers.py` the traced/static split, `test_plan.py` enumeration and
-planning, `test_results.py` the store, `test_legacy.py` migration, and
-`test_commands.py` the CLI end to end. `experiment.slurm` is best covered
+planning, `test_results.py` the store, and `test_commands.py` the CLI end
+to end. `experiment.slurm` is best covered
 from the consuming project's own test suite, against a sandbox repo built
 by its fixtures.

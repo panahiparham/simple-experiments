@@ -1,24 +1,26 @@
 """Where an experiment's results live.
 
-One SQLite database per experiment, holding one table per component and one row
-per run: the run's id, the id of its config, its seed, the config itself, and
-whatever the run produced as a binary blob.
+One SQLite database per component, holding one row per run - its id, the id of
+its config, its seed and the config itself - and one row per metric a run
+produced, its array stored as compressed ``.npy`` bytes. The harness never names
+a metric: they are whatever the shard function returned.
 
 A shared SQLite file is not safe under concurrent writes, and on a cluster
-filesystem it is worse, so a worker never writes the experiment's database
-directly. It writes its own part beside it, and the parts are merged in at the
-end of a sweep. Reads always union the database with any parts still present, so
+filesystem it is worse, so a worker never writes a component's database
+directly. It writes its own part, and the parts are merged in at the end of a
+sweep. Reads always union the database with any parts still present, so
 results from a sweep that was interrupted before its merge are still visible and
 still count as done. Reads also take in the other machine's results, mirrored
 under ``cluster/`` locally or ``local/`` on the cluster.
 
     results/
-        pinball.db              # merged: one table per component
+        dqn.db                  # merged: one per component
         pinball.parts/
-            part-0.db           # transient, one per worker
-            part-1.db
+            dqn/
+                part-0.db       # transient, one per worker
+                part-1.db
         cluster/                # read-only mirror of the cluster's results/
-            pinball.db
+            dqn.db
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ import io
 import json
 import shutil
 import sqlite3
+import zlib
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Self
@@ -44,23 +47,27 @@ __all__ = [
     "completed",
     "database_path",
     "delete_runs",
-    "load_array",
-    "load_result",
+    "load_metric",
     "load_runs",
     "merge_parts",
 ]
 
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS "{component}" (
+CREATE TABLE IF NOT EXISTS runs (
     run_id     TEXT PRIMARY KEY,
     config_id  TEXT NOT NULL,
     seed       INTEGER NOT NULL,
-    config     TEXT NOT NULL,
-    result     BLOB
+    config     TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS metrics (
+    run_id     TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    value      BLOB NOT NULL,
+    PRIMARY KEY (run_id, name)
 );
 """
-_COLUMNS = "run_id, config_id, seed, config, result"
+_COLUMNS = "run_id, config_id, seed, config"
 
 # Each machine keeps a read-only copy of the other's results: the cluster's
 # under ``cluster/`` locally, and the local machine's under ``local/`` there.
@@ -68,16 +75,17 @@ _CLUSTER_MIRROR = "cluster"
 _LOCAL_MIRROR = "local"
 
 
-def database_path(experiment: Experiment) -> Path:
-    """The experiment's merged database.
+def database_path(experiment: Experiment, component: str) -> Path:
+    """A component's merged database.
 
     Args:
         experiment: The experiment.
+        component: The component.
 
     Returns:
-        ``<results_dir>/<name>.db``.
+        ``<results_dir>/<component>.db``.
     """
-    return experiment.results_dir / f"{experiment.name}.db"
+    return experiment.results_dir / f"{component}.db"
 
 
 def _parts_dir(experiment: Experiment) -> Path:
@@ -85,32 +93,32 @@ def _parts_dir(experiment: Experiment) -> Path:
     return experiment.results_dir / f"{experiment.name}.parts"
 
 
-def _part_path(experiment: Experiment, part: str) -> Path:
+def _part_path(experiment: Experiment, component: str, part: str) -> Path:
     """The database one worker, or one of its slots, writes during a sweep."""
-    return _parts_dir(experiment) / f"part-{part}.db"
+    return _parts_dir(experiment) / component / f"part-{part}.db"
 
 
-def _part_paths(experiment: Experiment) -> list[Path]:
-    """Every per-worker part currently on disk, in a stable order."""
-    parts = _parts_dir(experiment)
-    return sorted(parts.glob("part-*.db")) if parts.is_dir() else []
+def _part_paths(experiment: Experiment, component: str) -> list[Path]:
+    """Every per-worker part of a component currently on disk, in a stable order."""
+    return sorted((_parts_dir(experiment) / component).glob("part-*.db"))
 
 
-def _mirrored_paths(experiment: Experiment) -> list[Path]:
-    """Every database mirrored from another machine, in a stable order."""
-    paths: list[Path] = []
-    for mirror in (_CLUSTER_MIRROR, _LOCAL_MIRROR):
-        root = experiment.results_dir / mirror
-        paths += sorted(root.glob(f"{experiment.name}.db"))
-        paths += sorted(root.glob(f"{experiment.name}.parts/part-*.db"))
-    return paths
+def _databases_in(root: Path, experiment: Experiment, component: str) -> list[Path]:
+    """A component's merged database under ``root``, then its parts there."""
+    parts = root / f"{experiment.name}.parts" / component
+    return sorted(root.glob(f"{component}.db")) + sorted(parts.glob("part-*.db"))
 
 
-def _database_paths(experiment: Experiment) -> list[Path]:
-    """Every database holding results: the merged one, any parts, then mirrors."""
-    merged = database_path(experiment)
-    own = ([merged] if merged.exists() else []) + _part_paths(experiment)
-    return own + _mirrored_paths(experiment)
+def _mirrored_paths(experiment: Experiment, component: str) -> list[Path]:
+    """Every database of a component mirrored from another machine."""
+    roots = [experiment.results_dir / m for m in (_CLUSTER_MIRROR, _LOCAL_MIRROR)]
+    return [p for root in roots for p in _databases_in(root, experiment, component)]
+
+
+def _database_paths(experiment: Experiment, component: str) -> list[Path]:
+    """Every database holding a component's runs: this machine's, then mirrors."""
+    own = _databases_in(experiment.results_dir, experiment, component)
+    return own + _mirrored_paths(experiment, component)
 
 
 def _connect_write(path: str | Path) -> sqlite3.Connection:
@@ -132,13 +140,9 @@ def _connect_write(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
-def _ensure_table(conn: sqlite3.Connection, component: str) -> None:
-    """Create a component's table if it is not there yet.
-
-    Component names are validated as identifiers where they are declared, so
-    interpolating one into the schema cannot inject SQL.
-    """
-    conn.executescript(_SCHEMA.format(component=component))
+def _ensure_table(conn: sqlite3.Connection) -> None:
+    """Create the runs and metrics tables if they are not there yet."""
+    conn.executescript(_SCHEMA)
 
 
 def _query_ro(path: str | Path, sql: str, params: tuple = ()) -> list[tuple]:
@@ -162,39 +166,16 @@ def _query_ro(path: str | Path, sql: str, params: tuple = ()) -> list[tuple]:
         conn.close()
 
 
-def _to_blob(result: dict[str, np.ndarray]) -> bytes | None:
-    """Serialise one run's result arrays.
-
-    Args:
-        result: The run's named arrays.
-
-    Returns:
-        The arrays as npz bytes, or ``None`` if the run produced none.
-    """
-    if not result:
-        return None
+def _to_blob(array: np.ndarray) -> bytes:
+    """Serialise one metric as compressed ``.npy`` bytes."""
     buffer = io.BytesIO()
-    np.savez_compressed(
-        buffer,
-        allow_pickle=False,
-        **{k: np.asarray(v) for k, v in result.items()},
-    )
-    return buffer.getvalue()
+    np.save(buffer, np.asarray(array), allow_pickle=False)
+    return zlib.compress(buffer.getvalue())
 
 
-def _from_blob(blob: bytes | None) -> dict[str, np.ndarray]:
-    """Read back a result blob.
-
-    Args:
-        blob: The stored bytes, or ``None``.
-
-    Returns:
-        The run's named arrays, empty if there were none.
-    """
-    if not blob:
-        return {}
-    with np.load(io.BytesIO(blob)) as data:
-        return {name: data[name] for name in data.files}
+def _from_blob(blob: bytes) -> np.ndarray:
+    """Read back one stored metric."""
+    return np.load(io.BytesIO(zlib.decompress(blob)), allow_pickle=False)
 
 
 def completed(experiment: Experiment) -> dict[str, set[str]]:
@@ -211,31 +192,28 @@ def completed(experiment: Experiment) -> dict[str, set[str]]:
         A ``{component name: {run id}}`` mapping, with an entry for every
         component the experiment declares even when it has no results yet.
     """
-    done: dict[str, set[str]] = {c.name: set() for c in experiment.components}
-    for path in _database_paths(experiment):
-        for component, ids in done.items():
-            ids.update(
-                row[0]
-                for row in _query_ro(path, f'SELECT run_id FROM "{component}"')
-            )
-    return done
+    return {
+        component.name: {
+            run
+            for path in _database_paths(experiment, component.name)
+            for (run,) in _query_ro(path, "SELECT run_id FROM runs")
+        }
+        for component in experiment.components
+    }
 
 
 class ResultWriter:
     """Collects one worker's results into its own part of the store.
 
-    The part database is created on the first save, so a worker whose shards
-    were all already stored leaves no file behind. Use it as a context manager,
-    or close it when done.
-
-    Attributes:
-        path: The part database this writer owns.
+    A component's part database is created on its first save, so a worker whose
+    shards were all already stored leaves no file behind. Use it as a context
+    manager, or close it when done.
     """
 
     def __init__(self, experiment: Experiment, part: str = "0") -> None:
-        self.path = _part_path(experiment, part)
-        self._conn: sqlite3.Connection | None = None
-        self._tables: set[str] = set()
+        self._experiment = experiment
+        self._part = part
+        self._conns: dict[str, sqlite3.Connection] = {}
 
     def __enter__(self) -> Self:
         return self
@@ -264,48 +242,45 @@ class ResultWriter:
                 f"shard of component {shard.component!r} has {len(shard.runs)} "
                 f"run(s) but {len(results)} result(s) came back"
             )
-        conn = self._connection()
-        if shard.component not in self._tables:
-            _ensure_table(conn, shard.component)
-            self._tables.add(shard.component)
-
-        before = conn.total_changes
+        conn = self._connection(shard.component)
+        stored = 0
         for run, result in zip(shard.runs, results, strict=True):
-            conn.execute(
-                f'INSERT OR IGNORE INTO "{shard.component}" ({_COLUMNS}) '
-                "VALUES (?, ?, ?, ?, ?)",
+            inserted = conn.execute(
+                f"INSERT OR IGNORE INTO runs ({_COLUMNS}) VALUES (?, ?, ?, ?)",
                 (
                     run.id,
                     config_id(run.config),
                     int(run.seed),
                     json.dumps(as_point(run.config)),
-                    _to_blob(result),
                 ),
+            ).rowcount
+            if not inserted:
+                continue
+            conn.executemany(
+                "INSERT INTO metrics (run_id, name, value) VALUES (?, ?, ?)",
+                [(run.id, name, _to_blob(value)) for name, value in result.items()],
             )
+            stored += 1
         conn.commit()
-        return conn.total_changes - before
+        return stored
 
     def close(self) -> None:
-        """Close the part database, if one was ever opened."""
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        """Close every part database this writer opened."""
+        for conn in self._conns.values():
+            conn.close()
+        self._conns.clear()
 
-    def _connection(self) -> sqlite3.Connection:
-        """The part's connection, opened on first use."""
-        if self._conn is None:
-            self._conn = _connect_write(self.path)
-        return self._conn
-
-
-def _tables(path: str | Path) -> list[str]:
-    """The component tables a database holds, ignoring SQLite's own."""
-    rows = _query_ro(path, "SELECT name FROM sqlite_master WHERE type = 'table'")
-    return [name for (name,) in rows if not name.startswith("sqlite_")]
+    def _connection(self, component: str) -> sqlite3.Connection:
+        """A component's part connection, opened on first use."""
+        if component not in self._conns:
+            conn = _connect_write(_part_path(self._experiment, component, self._part))
+            _ensure_table(conn)
+            self._conns[component] = conn
+        return self._conns[component]
 
 
 def merge_parts(experiment: Experiment) -> int:
-    """Merge a sweep's per-worker parts into the experiment's database.
+    """Merge a sweep's per-worker parts into each component's database.
 
     Idempotent, and meant to run in a single process once a sweep's workers
     have finished. Parts are deleted only after they have been merged cleanly,
@@ -318,35 +293,41 @@ def merge_parts(experiment: Experiment) -> int:
     Returns:
         The number of runs newly merged in.
     """
-    parts = _part_paths(experiment)
+    directory = _parts_dir(experiment)
+    merged = 0
+    for folder in sorted(p for p in directory.glob("*") if p.is_dir()):
+        merged += _merge_component(experiment, folder.name)
+        if not any(folder.iterdir()):
+            folder.rmdir()
+    if directory.is_dir() and not any(directory.iterdir()):
+        directory.rmdir()
+    return merged
+
+
+def _merge_component(experiment: Experiment, component: str) -> int:
+    """Merge one component's parts into its database, then delete them."""
+    parts = _part_paths(experiment, component)
     if not parts:
         return 0
 
-    conn = _connect_write(database_path(experiment))
+    conn = _connect_write(database_path(experiment, component))
     merged = 0
     try:
+        _ensure_table(conn)
         for part in parts:
-            tables = _tables(part)
-            for table in tables:
-                _ensure_table(conn, table)
             conn.execute("ATTACH DATABASE ? AS part", (str(part),))
-            before = conn.total_changes
-            for table in tables:
-                conn.execute(
-                    f'INSERT OR IGNORE INTO "{table}" ({_COLUMNS}) '
-                    f'SELECT {_COLUMNS} FROM part."{table}"'
-                )
+            merged += conn.execute(
+                f"INSERT OR IGNORE INTO runs ({_COLUMNS}) "
+                f"SELECT {_COLUMNS} FROM part.runs"
+            ).rowcount
+            conn.execute("INSERT OR IGNORE INTO metrics SELECT * FROM part.metrics")
             conn.commit()
             conn.execute("DETACH DATABASE part")
-            merged += conn.total_changes - before
     finally:
         conn.close()
 
     for part in parts:
         part.unlink()
-    directory = _parts_dir(experiment)
-    if directory.is_dir() and not any(directory.iterdir()):
-        directory.rmdir()
     return merged
 
 
@@ -386,16 +367,16 @@ def delete_runs(experiment: Experiment, component: str, run_ids: Sequence[str]) 
         return 0
     placeholders = ", ".join("?" for _ in run_ids)
     removed: set[str] = set()
-    for path in _database_paths(experiment):
-        if component not in _tables(path):
-            continue
+    for path in _database_paths(experiment, component):
         conn = _connect_write(path)
         try:
             rows = conn.execute(
-                f'DELETE FROM "{component}" WHERE run_id IN ({placeholders}) '
-                "RETURNING run_id",
+                f"DELETE FROM runs WHERE run_id IN ({placeholders}) RETURNING run_id",
                 tuple(run_ids),
             ).fetchall()
+            conn.execute(
+                f"DELETE FROM metrics WHERE run_id IN ({placeholders})", tuple(run_ids)
+            )
             conn.commit()
         finally:
             conn.close()
@@ -405,19 +386,21 @@ def delete_runs(experiment: Experiment, component: str, run_ids: Sequence[str]) 
 
 def _mirrored_runs(experiment: Experiment, component: str) -> set[str]:
     """The runs of a component that another machine stored, as mirrored here."""
-    query = f'SELECT run_id FROM "{component}"'
     return {
-        run for path in _mirrored_paths(experiment) for (run,) in _query_ro(path, query)
+        run
+        for path in _mirrored_paths(experiment, component)
+        for (run,) in _query_ro(path, "SELECT run_id FROM runs")
     }
 
 
 def clear_results(experiment: Experiment) -> None:
-    """Remove an experiment's merged database and every part.
+    """Remove every component's merged database and every part.
 
     Args:
         experiment: The experiment whose results to remove.
     """
-    database_path(experiment).unlink(missing_ok=True)
+    for path in experiment.results_dir.glob("*.db"):
+        path.unlink()
     parts = _parts_dir(experiment)
     if parts.is_dir():
         shutil.rmtree(parts)
@@ -438,8 +421,8 @@ def load_runs(experiment: Experiment, component: str) -> pl.DataFrame:
     keys = ["run_id", "config_id", "seed"]
     seen: set[str] = set()
     rows: list[dict] = []
-    for path in _database_paths(experiment):
-        query = f'SELECT run_id, config_id, seed, config FROM "{component}"'
+    for path in _database_paths(experiment, component):
+        query = "SELECT run_id, config_id, seed, config FROM runs"
         for run, config, seed, point in _query_ro(path, query):
             if run in seen:
                 continue
@@ -457,39 +440,38 @@ def load_runs(experiment: Experiment, component: str) -> pl.DataFrame:
     return frame.select([*keys, *[c for c in frame.columns if c not in keys]])
 
 
-def load_result(
-    experiment: Experiment, component: str, run_id: str
-) -> dict[str, np.ndarray]:
-    """Load everything one run produced.
+def load_metric(
+    experiment: Experiment, component: str, name: str, run_ids: Sequence[str]
+) -> list[np.ndarray | None]:
+    """Load one metric of several runs.
 
     Args:
         experiment: The experiment to read.
-        component: The component the run belongs to.
-        run_id: The run to load.
+        component: The component the runs belong to.
+        name: The metric to load.
+        run_ids: The runs to load it for.
 
     Returns:
-        The run's named arrays, empty if it stored none.
+        One array per run, in ``run_ids`` order, ``None`` where a run stored no
+        such metric.
+
+    Raises:
+        KeyError: If the component has no stored run with one of the ids.
     """
-    query = f'SELECT result FROM "{component}" WHERE run_id = ?'
-    for path in _database_paths(experiment):
-        rows = _query_ro(path, query, (run_id,))
-        if rows and rows[0][0] is not None:
-            return _from_blob(rows[0][0])
-    return {}
+    placeholders = ", ".join("?" for _ in run_ids)
+    runs_query = f"SELECT run_id FROM runs WHERE run_id IN ({placeholders})"
+    metric_query = (
+        "SELECT run_id, value FROM metrics "
+        f"WHERE name = ? AND run_id IN ({placeholders})"
+    )
+    known: set[str] = set()
+    blobs: dict[str, bytes] = {}
+    for path in _database_paths(experiment, component):
+        known.update(run for (run,) in _query_ro(path, runs_query, tuple(run_ids)))
+        for run, blob in _query_ro(path, metric_query, (name, *run_ids)):
+            blobs.setdefault(run, blob)
 
-
-def load_array(
-    experiment: Experiment, component: str, run_id: str, name: str
-) -> np.ndarray | None:
-    """Load one named array from a run's result.
-
-    Args:
-        experiment: The experiment to read.
-        component: The component the run belongs to.
-        run_id: The run to load.
-        name: The array to load.
-
-    Returns:
-        The array, or ``None`` if the run has no such array.
-    """
-    return load_result(experiment, component, run_id).get(name)
+    missing = [run for run in run_ids if run not in known]
+    if missing:
+        raise KeyError(f"{component!r} has no stored run(s) {missing}")
+    return [_from_blob(blobs[run]) if run in blobs else None for run in run_ids]

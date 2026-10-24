@@ -21,8 +21,7 @@ from experiment.plan import Run, Shard
 from experiment.results import (
     completed,
     database_path,
-    load_array,
-    load_result,
+    load_metric,
     load_runs,
     merge_parts,
 )
@@ -39,8 +38,7 @@ __all__ = [
     "completed",
     "config_id",
     "database_path",
-    "load_array",
-    "load_result",
+    "load_metric",
     "load_runs",
     "merge_parts",
     "run",

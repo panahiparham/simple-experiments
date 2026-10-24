@@ -716,7 +716,7 @@ def fetch(experiment, *, config_path: str | Path | None = None) -> None:
 
 
 def push(experiment, *, config_path: str | Path | None = None) -> None:
-    """Mirror the local database into ``local/`` in the cluster's results.
+    """Mirror the local databases into ``local/`` in the cluster's results.
 
     Each push replaces that copy, so runs deleted here leave the cluster too,
     and rsync sends only what changed. Reads there union it with the cluster's
@@ -730,17 +730,20 @@ def push(experiment, *, config_path: str | Path | None = None) -> None:
         SystemExit: If there is no local database yet, or rsync fails.
     """
     cfg = load_config(config_path)
-    local = experiment.results_dir / f"{experiment.name}.db"
-    if not local.exists():
-        raise SystemExit(f"[{experiment.name}] no local database at {local}")
+    if not any(experiment.results_dir.glob("*.db")):
+        raise SystemExit(
+            f"[{experiment.name}] no local database in {experiment.results_dir}"
+        )
 
     mirror = f"{_remote_root(cfg)}/results/{experiment.name}/{_LOCAL_MIRROR}"
     _ssh(cfg, f"mkdir -p {shlex.quote(mirror)}")
-    dest = f"{mirror}/{local.name}"
-    proc = _run(["rsync", "-az", str(local), _remote_path(cfg, dest)])
+    proc = _run([
+        "rsync", "-az", "--delete", "--include=*.db", "--exclude=*",
+        f"{experiment.results_dir}/", _remote_path(cfg, mirror + "/"),
+    ])
     _check_auth(cfg, proc.stderr)
     if proc.returncode != 0:
-        raise SystemExit(f"rsync to {dest} failed\n{proc.stderr.strip()}")
+        raise SystemExit(f"rsync to {mirror} failed\n{proc.stderr.strip()}")
 
 
 def delete_runs(

@@ -24,8 +24,7 @@ from experiment.results import (
     completed,
     database_path,
     delete_runs,
-    load_array,
-    load_result,
+    load_metric,
     load_runs,
     merge_parts,
 )
@@ -71,13 +70,21 @@ def run_everything(experiment: Experiment, num_workers: int = 1) -> None:
 # --- layout -----------------------------------------------------------------
 
 
-def test_the_database_is_named_after_the_experiment(experiment):
-    assert database_path(experiment).name == "toy.db"
+def test_each_database_is_named_after_its_component(experiment):
+    assert database_path(experiment, "a").name == "a.db"
 
 
-def test_parts_sit_beside_the_database(experiment):
-    assert _part_path(experiment, "0").parent == _parts_dir(experiment)
+def test_parts_sit_in_the_experiments_parts_directory(experiment):
+    part = _part_path(experiment, "a", "0")
+    assert part.is_relative_to(_parts_dir(experiment))
     assert _parts_dir(experiment).parent == experiment.results_dir
+
+
+def test_each_component_is_merged_into_its_own_database(experiment):
+    run_everything(experiment)
+    merge_parts(experiment)
+    stored = sorted(p.name for p in experiment.results_dir.glob("*.db"))
+    assert stored == ["a.db", "b.db"]
 
 
 # --- writing ----------------------------------------------------------------
@@ -90,7 +97,7 @@ def test_an_empty_store_has_completed_nothing(experiment):
 def test_a_worker_with_no_work_writes_no_file(experiment):
     writer = ResultWriter(experiment, "0")
     writer.close()
-    assert not writer.path.exists()
+    assert not _parts_dir(experiment).exists()
 
 
 def test_saved_runs_are_reported_as_completed(experiment):
@@ -131,7 +138,7 @@ def test_a_run_may_produce_nothing(experiment):
     with ResultWriter(experiment, "0") as writer:
         writer.save(shard, [{} for _ in shard.runs])
     run = shard.runs[0]
-    assert load_result(experiment, shard.component, run.id) == {}
+    assert load_metric(experiment, shard.component, "reward", [run.id]) == [None]
     assert run.id in completed(experiment)[shard.component]
 
 
@@ -141,8 +148,8 @@ def test_a_redundant_result_is_stored_compressed(experiment):
     with ResultWriter(experiment, "0") as writer:
         writer.save(shard, [arrays for _ in shard.runs])
     stored = _query_ro(
-        writer.path,
-        f'SELECT result FROM "{shard.component}" WHERE run_id = ?',
+        _part_path(experiment, shard.component, "0"),
+        "SELECT value FROM metrics WHERE run_id = ?",
         (shard.runs[0].id,),
     )[0][0]
     assert len(stored) < arrays["reward"].nbytes / 10, (
@@ -202,6 +209,15 @@ def test_deleting_a_run_removes_it_from_completed(experiment):
     assert run_id not in completed(experiment)["a"]
 
 
+def test_deleting_a_run_removes_its_arrays(experiment):
+    run_everything(experiment)
+    merge_parts(experiment)
+    run_id = next(iter(completed(experiment)["a"]))
+    delete_runs(experiment, "a", [run_id])
+    query = "SELECT name FROM metrics WHERE run_id = ?"
+    assert _query_ro(database_path(experiment, "a"), query, (run_id,)) == []
+
+
 def test_deleting_leaves_other_runs_and_components_untouched(experiment):
     run_everything(experiment)
     merge_parts(experiment)
@@ -256,6 +272,13 @@ def test_clearing_removes_merged_and_unmerged_runs(experiment):
     assert completed(experiment) == {"a": set(), "b": set()}
 
 
+def test_clearing_removes_components_no_longer_declared(experiment):
+    run_everything(experiment)
+    merge_parts(experiment)
+    clear_results(dataclasses.replace(experiment, components=experiment.components[:1]))
+    assert completed(experiment) == {"a": set(), "b": set()}
+
+
 def test_clearing_an_empty_store_is_a_no_op(experiment):
     clear_results(experiment)
     assert completed(experiment) == {"a": set(), "b": set()}
@@ -291,36 +314,15 @@ def test_components_are_read_separately(experiment):
     assert load_runs(experiment, "b")["NAME"].to_list() == ["ddqn", "ddqn"]
 
 
-def test_a_runs_arrays_load_back_unchanged(experiment):
-    run_everything(experiment)
-    merge_parts(experiment)
-    for run_id in load_runs(experiment, "a")["run_id"]:
-        stored = load_result(experiment, "a", run_id)
-        assert set(stored) == {"reward"}
-        assert stored["reward"].shape == (4,)
-
-
-def test_one_array_can_be_loaded_by_name(experiment):
-    run_everything(experiment)
-    run_id = load_runs(experiment, "a")["run_id"][0]
-    assert load_array(experiment, "a", run_id, "reward") is not None
-    assert load_array(experiment, "a", run_id, "absent") is None
-
-
-def test_an_unknown_run_reads_as_nothing(experiment):
-    run_everything(experiment)
-    assert load_result(experiment, "a", "nosuchrun") == {}
-
-
 def test_a_database_that_is_not_there_reads_as_empty(experiment):
-    assert _query_ro(database_path(experiment), 'SELECT run_id FROM "a"') == []
+    assert _query_ro(database_path(experiment, "a"), "SELECT run_id FROM runs") == []
 
 
 def test_a_query_with_the_wrong_binding_count_is_not_swallowed(experiment):
     run_everything(experiment)
     merge_parts(experiment)
     with pytest.raises(sqlite3.ProgrammingError):
-        _query_ro(database_path(experiment), 'SELECT * FROM "a" WHERE run_id = ?')
+        _query_ro(database_path(experiment, "a"), "SELECT * FROM runs WHERE run_id = ?")
 
 
 # --- mirrors ----------------------------------------------------------------
@@ -346,7 +348,8 @@ def test_a_mirrored_sweep_in_flight_counts_as_completed(experiment):
 def test_mirrored_runs_load_back(experiment):
     run_everything(mirror(experiment, "cluster"))
     run_id = load_runs(experiment, "a")["run_id"][0]
-    assert load_array(experiment, "a", run_id, "reward") is not None
+    [loaded] = load_metric(experiment, "a", "reward", [run_id])
+    assert loaded is not None
 
 
 def test_a_run_both_here_and_mirrored_loads_once(experiment):
@@ -364,3 +367,74 @@ def test_merging_leaves_a_mirror_in_place(experiment):
 def test_an_unknown_directory_is_not_read_as_a_mirror(experiment):
     run_everything(mirror(experiment, "elsewhere"))
     assert completed(experiment) == {"a": set(), "b": set()}
+
+
+# --- loading metrics --------------------------------------------------------
+
+
+def run_ids_by_seed(experiment: Experiment, component: str) -> list[str]:
+    return load_runs(experiment, component).sort("seed")["run_id"].to_list()
+
+
+def test_a_metric_loads_one_array_per_run_in_the_order_asked(experiment):
+    run_everything(experiment)
+    merge_parts(experiment)
+    run_ids = run_ids_by_seed(experiment, "a")[::-1]
+
+    loaded = load_metric(experiment, "a", "reward", run_ids)
+
+    assert [array.tolist() for array in loaded] == [
+        [2.0, 3.0, 4.0, 5.0], [1.0, 2.0, 3.0, 4.0], [0.0, 1.0, 2.0, 3.0]
+    ]
+
+
+def test_a_metric_keeps_its_dtype_and_shape(experiment):
+    shard = plan_experiment(experiment)[0]
+    padded = np.arange(6, dtype=np.int32).reshape(2, 3)
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [{"lengths": padded} for _ in shard.runs])
+
+    [loaded] = load_metric(experiment, shard.component, "lengths", [shard.runs[0].id])
+
+    assert loaded is not None
+    assert loaded.dtype == np.int32
+    assert np.array_equal(loaded, padded)
+
+
+def test_a_run_without_the_metric_loads_as_none(experiment):
+    run_everything(experiment)
+    run_ids = run_ids_by_seed(experiment, "a")
+
+    assert load_metric(experiment, "a", "absent", run_ids) == [None, None, None]
+
+
+def test_loading_a_metric_of_an_unknown_run_is_refused(experiment):
+    run_everything(experiment)
+    run_ids = [*run_ids_by_seed(experiment, "a"), "nosuchrun"]
+
+    with pytest.raises(KeyError, match="nosuchrun"):
+        load_metric(experiment, "a", "reward", run_ids)
+
+
+def test_a_run_of_another_component_is_unknown(experiment):
+    run_everything(experiment)
+    run_ids = run_ids_by_seed(experiment, "b")
+
+    with pytest.raises(KeyError):
+        load_metric(experiment, "a", "reward", run_ids)
+
+
+def test_loading_a_metric_of_no_runs_gives_nothing(experiment):
+    assert load_metric(experiment, "a", "reward", []) == []
+
+
+def test_a_metric_loads_across_parts_and_mirrors(experiment):
+    plan = plan_experiment(experiment)
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(plan[0], [result(r.seed) for r in plan[0].runs])
+    run_everything(mirror(experiment, "cluster"))
+    run_ids = run_ids_by_seed(experiment, "a")
+
+    loaded = load_metric(experiment, "a", "reward", run_ids)
+
+    assert [array[0] for array in loaded] == [0.0, 1.0, 2.0]

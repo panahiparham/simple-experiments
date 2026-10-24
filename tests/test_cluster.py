@@ -830,6 +830,23 @@ def test_pushing_again_replaces_the_clusters_copy(cluster, tmp_path):
     assert pushed.read_text() == "pruned"
 
 
+def test_pushing_drops_databases_removed_here_from_the_clusters_copy(
+    cluster, tmp_path
+):
+    root = cluster()
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "a.db").write_text("a results")
+    (local / "b.db").write_text("b results")
+    slurm.push(experiment_at(local))
+
+    (local / "b.db").unlink()
+    slurm.push(experiment_at(local))
+
+    pushed = root / "results" / "toy" / "local"
+    assert sorted(p.name for p in pushed.iterdir()) == ["a.db"]
+
+
 def test_push_without_a_local_database_is_refused(cluster, tmp_path):
     cluster()
 
@@ -849,12 +866,12 @@ def test_push_compresses_the_transfer(cluster, tmp_path, rsync_calls):
     assert "z" in argv[1], f"rsync ran as {argv}"
 
 
-def store(path: Path, component: str, *run_ids: str) -> None:
+def store(path: Path, *run_ids: str) -> None:
     conn = _connect_write(path)
-    _ensure_table(conn, component)
+    _ensure_table(conn)
     conn.executemany(
-        f'INSERT INTO "{component}" VALUES (?, ?, ?, ?, ?)',
-        [(run_id, "cfg", 0, "{}", None) for run_id in run_ids],
+        "INSERT INTO runs VALUES (?, ?, ?, ?)",
+        [(run_id, "cfg", 0, "{}") for run_id in run_ids],
     )
     conn.commit()
     conn.close()
@@ -866,8 +883,8 @@ def remote_results(cluster) -> Path:
 
 
 def test_deleting_on_the_cluster_reaches_its_database_and_parts(remote_results):
-    store(remote_results / "toy.db", "a", "r0", "r1")
-    store(remote_results / "toy.parts" / "part-0.db", "a", "r2")
+    store(remote_results / "a.db", "r0", "r1")
+    store(remote_results / "toy.parts" / "a" / "part-0.db", "r2")
 
     removed = slurm.delete_runs(experiment_at(Path("unused")), "a", ["r0", "r2"])
 
@@ -876,7 +893,7 @@ def test_deleting_on_the_cluster_reaches_its_database_and_parts(remote_results):
 
 
 def test_deleting_on_the_cluster_reaches_the_pushed_copy(remote_results):
-    store(remote_results / "local" / "toy.db", "a", "r0")
+    store(remote_results / "local" / "a.db", "r0")
 
     slurm.delete_runs(experiment_at(Path("unused")), "a", ["r0"])
 
@@ -884,24 +901,24 @@ def test_deleting_on_the_cluster_reaches_the_pushed_copy(remote_results):
 
 
 def test_a_run_stored_twice_on_the_cluster_is_deleted_once(remote_results):
-    store(remote_results / "toy.db", "a", "r0")
-    store(remote_results / "local" / "toy.db", "a", "r0")
+    store(remote_results / "a.db", "r0")
+    store(remote_results / "local" / "a.db", "r0")
 
     assert slurm.delete_runs(experiment_at(Path("unused")), "a", ["r0"]) == 1
 
 
 def test_deleting_on_the_cluster_leaves_other_components_alone(remote_results):
-    store(remote_results / "toy.db", "a", "r0")
-    store(remote_results / "toy.db", "b", "r0")
+    store(remote_results / "a.db", "r0")
+    store(remote_results / "b.db", "r0")
 
     slurm.delete_runs(experiment_at(Path("unused")), "a", ["r0"])
 
-    rows = _query_ro(remote_results / "toy.db", 'SELECT run_id FROM "b"')
+    rows = _query_ro(remote_results / "b.db", "SELECT run_id FROM runs")
     assert rows == [("r0",)]
 
 
 def test_deleting_unknown_runs_on_the_cluster_removes_nothing(remote_results):
-    store(remote_results / "toy.db", "a", "r0")
+    store(remote_results / "a.db", "r0")
 
     assert slurm.delete_runs(experiment_at(Path("unused")), "a", ["nosuchrun"]) == 0
     assert completed(experiment_at(remote_results))["a"] == {"r0"}
@@ -934,7 +951,7 @@ def delete(local: Path, *args: str) -> None:
 def test_deleting_a_mirrored_run_deletes_it_on_the_cluster(
     remote_results, squeue, tmp_path
 ):
-    store(remote_results / "toy.db", "a", "r0", "r1")
+    store(remote_results / "a.db", "r0", "r1")
     local = tmp_path / "local"
     slurm.fetch(experiment_at(local))
     squeue(queued=False)
@@ -948,10 +965,10 @@ def test_deleting_a_mirrored_run_deletes_it_on_the_cluster(
 def test_deleting_reaches_runs_finished_since_the_last_sync(
     remote_results, squeue, tmp_path
 ):
-    store(remote_results / "toy.db", "a", "r0")
+    store(remote_results / "a.db", "r0")
     local = tmp_path / "local"
     slurm.fetch(experiment_at(local))
-    store(remote_results / "toy.parts" / "part-0.db", "a", "r1")
+    store(remote_results / "toy.parts" / "a" / "part-0.db", "r1")
     squeue(queued=False)
 
     delete(local, "--component", "a", "--yes")
@@ -960,7 +977,7 @@ def test_deleting_reaches_runs_finished_since_the_last_sync(
 
 
 def test_deleting_while_jobs_are_queued_is_refused(remote_results, squeue, tmp_path):
-    store(remote_results / "toy.db", "a", "r0")
+    store(remote_results / "a.db", "r0")
     local = tmp_path / "local"
     slurm.fetch(experiment_at(local))
     squeue(queued=True)
@@ -973,7 +990,7 @@ def test_deleting_while_jobs_are_queued_is_refused(remote_results, squeue, tmp_p
 def test_previewing_a_delete_while_jobs_are_queued_is_allowed(
     remote_results, squeue, tmp_path, capsys
 ):
-    store(remote_results / "toy.db", "a", "r0")
+    store(remote_results / "a.db", "r0")
     local = tmp_path / "local"
     slurm.fetch(experiment_at(local))
     squeue(queued=True)

@@ -23,7 +23,7 @@ import experiment as experiment_package
 from experiment.commands import _split_cluster_flags, parse_overrides, run
 from experiment.design import Component, Experiment, SlurmResources
 from experiment.plan import Phase, Shard
-from experiment.results import completed, load_result, load_runs
+from experiment.results import completed, load_metric, load_runs
 
 PACKAGE_ROOT = Path(experiment_package.__file__).resolve().parents[1]
 
@@ -47,10 +47,9 @@ def recompute(configs, seeds):
 
 
 def rewards(experiment, component):
-    return [
-        load_result(experiment, component, run_id)["reward"].tolist()
-        for run_id in load_runs(experiment, component).sort("seed")["run_id"]
-    ]
+    run_ids = load_runs(experiment, component).sort("seed")["run_id"].to_list()
+    loaded = load_metric(experiment, component, "reward", run_ids)
+    return [array.tolist() for array in loaded]
 
 
 @pytest.fixture
@@ -348,7 +347,7 @@ def test_an_empty_share_writes_no_part(experiment, tmp_path):
         experiment, process,
         ["sweep", "--plan", str(path), "--worker-index", str(empty)],
     )
-    assert not (tmp_path / "toy.parts" / f"part-{empty}.db").exists()
+    assert not list((tmp_path / "toy.parts").rglob(f"part-{empty}.db"))
 
 
 # --- status -----------------------------------------------------------------
