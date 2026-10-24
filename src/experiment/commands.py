@@ -19,7 +19,6 @@ from pathlib import Path
 
 from experiment import slurm
 from experiment.design import Component, Experiment
-from experiment.legacy import migrate
 from experiment.plan import (
     Phase,
     assign_slots,
@@ -41,7 +40,7 @@ from experiment.runner import ShardFn, run_shards
 __all__ = ["parse_overrides", "run"]
 
 
-MODES = ("single", "sweep", "status", "delete", "queue", "sync", "logs", "migrate")
+MODES = ("single", "sweep", "status", "delete", "queue", "sync", "logs")
 
 
 def parse_overrides(assignments: Sequence[str]) -> dict[str, str]:
@@ -542,22 +541,6 @@ def _status(experiment: Experiment, cluster: _Cluster, argv: list[str]) -> None:
         slurm.report_resources(experiment, config_path=cluster.config)
 
 
-def _migrate(experiment: Experiment, argv: list[str]) -> None:
-    """Fold results from the old per-component databases into this one."""
-    argparse.ArgumentParser(prog="run.py migrate").parse_args(argv)
-
-    moved = migrate(experiment)
-    if not moved:
-        print(f"[{experiment.name}] no legacy databases to migrate")
-        return
-    for component, count in moved.items():
-        print(f"[{component}] migrated {count} run(s)")
-    print(
-        f"{experiment.name}: migrated {sum(moved.values())} run(s) from "
-        f"{len(moved)} legacy database(s); the old files are left in place"
-    )
-
-
 @dataclasses.dataclass(frozen=True)
 class _Cluster:
     """The ``--slurm`` options, taken out of a mode's own arguments."""
@@ -720,5 +703,3 @@ def run(
         _status(experiment, cluster, rest)
     elif mode == "delete":
         _delete(experiment, cluster, rest)
-    elif mode == "migrate":
-        _migrate(experiment, rest)

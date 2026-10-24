@@ -251,12 +251,6 @@ a clean tree nor the cluster.
 `EXPERIMENT_LOCAL_MODE=1` runs every "remote" command in a local shell,
 which is how the cluster flow is exercised without a cluster.
 
-## Migrating an older store
-
-An earlier layout kept one database per component. `run.py migrate` folds
-those into the experiment's database. Run ids are unchanged, so migrated
-runs still count as done. The old files are left in place.
-
 ## Scheduling a weekly benchmark
 
 `experiment.weekly` is a stateless scheduler for a benchmark that should run
@@ -315,7 +309,6 @@ scheduler does not track job or publish identity beyond that.
 | `experiment.runner` | the loop that hands shards to the shard function |
 | `experiment.commands` | `run`, the CLI every `run.py` shares |
 | `experiment.slurm` | cluster dispatch, fetch, queue, logs, and `setup` |
-| `experiment.legacy` | one-shot migration from the per-component store |
 | `experiment.weekly` | stateless scheduler for a recurring benchmark run |
 
 ## Tests
@@ -326,7 +319,7 @@ uv run pytest
 
 `tests/` covers the harness with fake configs and a fake shard function:
 `test_hypers.py` the traced/static split, `test_plan.py` enumeration and
-planning, `test_results.py` the store, `test_legacy.py` migration, and
-`test_commands.py` the CLI end to end. `experiment.slurm` is best covered
+planning, `test_results.py` the store, and `test_commands.py` the CLI end
+to end. `experiment.slurm` is best covered
 from the consuming project's own test suite, against a sandbox repo built
 by its fixtures.
