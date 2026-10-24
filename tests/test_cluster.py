@@ -687,7 +687,7 @@ def test_mps_without_a_gpu_starts_no_server(cluster, repo, capsys):
     assert jobs_starting_mps(capsys.readouterr().out) == []
 
 
-def test_fetch_brings_the_clusters_database_home(cluster, tmp_path):
+def test_fetch_mirrors_the_clusters_database(cluster, tmp_path):
     remote = cluster() / "results" / "toy"
     remote.mkdir(parents=True)
     (remote / "toy.db").write_text("merged")
@@ -695,10 +695,10 @@ def test_fetch_brings_the_clusters_database_home(cluster, tmp_path):
 
     slurm.fetch(experiment_at(local))
 
-    assert (local / "toy.parts" / "part-cluster.db").read_text() == "merged"
+    assert (local / "cluster" / "toy.db").read_text() == "merged"
 
 
-def test_fetch_brings_a_sweeps_leftover_parts_home(cluster, tmp_path):
+def test_fetch_mirrors_a_sweeps_leftover_parts(cluster, tmp_path):
     remote = cluster() / "results" / "toy" / "toy.parts"
     remote.mkdir(parents=True)
     (remote / "part-0.db").write_text("worker zero")
@@ -706,7 +706,48 @@ def test_fetch_brings_a_sweeps_leftover_parts_home(cluster, tmp_path):
 
     slurm.fetch(experiment_at(local))
 
-    assert (local / "toy.parts" / "part-cluster-0.db").read_text() == "worker zero"
+    mirrored = local / "cluster" / "toy.parts" / "part-0.db"
+    assert mirrored.read_text() == "worker zero"
+
+
+def test_fetching_again_drops_parts_the_cluster_has_merged(cluster, tmp_path):
+    remote = cluster() / "results" / "toy"
+    (remote / "toy.parts").mkdir(parents=True)
+    (remote / "toy.parts" / "part-0.db").write_text("worker zero")
+    local = tmp_path / "local"
+    slurm.fetch(experiment_at(local))
+
+    (remote / "toy.parts" / "part-0.db").unlink()
+    (remote / "toy.db").write_text("merged")
+    slurm.fetch(experiment_at(local))
+
+    mirrored = sorted(p.relative_to(local) for p in local.rglob("*.db"))
+    assert mirrored == [Path("cluster/toy.db")]
+
+
+def test_fetch_leaves_the_local_results_alone(cluster, tmp_path):
+    remote = cluster() / "results" / "toy"
+    remote.mkdir(parents=True)
+    (remote / "toy.db").write_text("merged")
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "toy.db").write_text("local results")
+
+    slurm.fetch(experiment_at(local))
+
+    assert (local / "toy.db").read_text() == "local results"
+
+
+def test_fetch_skips_the_clusters_copy_of_local_results(cluster, tmp_path):
+    remote = cluster() / "results" / "toy"
+    (remote / "local").mkdir(parents=True)
+    (remote / "local" / "toy.db").write_text("pushed")
+    (remote / "toy.db").write_text("merged")
+    local = tmp_path / "local"
+
+    slurm.fetch(experiment_at(local))
+
+    assert not (local / "cluster" / "local").exists()
 
 
 @pytest.fixture
@@ -803,8 +844,8 @@ def test_a_push_then_fetch_brings_back_the_same_rows(cluster, tmp_path):
     (local / "toy.db").unlink()
     slurm.fetch(experiment_at(local))
 
-    parts = [p.read_text() for p in (local / "toy.parts").glob("part-*.db")]
-    assert parts == ["local results"]
+    mirrored = [p.read_text() for p in (local / "cluster").rglob("*.db")]
+    assert mirrored == ["local results"]
 
 
 @pytest.mark.parametrize(

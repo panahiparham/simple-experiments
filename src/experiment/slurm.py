@@ -46,7 +46,6 @@ import hashlib
 import json
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -57,6 +56,7 @@ from pathlib import Path
 from typing import Any
 
 from experiment.design import Experiment, SlurmResources
+from experiment.results import _CLUSTER_MIRROR, _LOCAL_MIRROR
 
 __all__ = [
     "DEFAULT_CONFIG_PATH",
@@ -665,14 +665,14 @@ def dispatch(  # noqa: PLR0913
           f"  run.py sync     bring the results home", file=sys.stderr)
 
 
-def fetch(experiment, *, config_path: str | Path | None = None) -> int:
-    """Copy an experiment's cluster results into its local results directory.
+def fetch(experiment, *, config_path: str | Path | None = None) -> None:
+    """Mirror an experiment's cluster results into ``results/cluster/``.
 
-    The cluster's database lands as one more part beside the local one, and any
-    parts a sweep left behind come with it. Merging them is the caller's to do,
-    and it is the ordinary merge: ids decide what is already there, so local and
-    cluster results combine, nothing is overwritten, and fetching twice changes
-    nothing.
+    The mirror is the cluster's copy, never written here, so each fetch makes
+    it match the cluster again: rsync sends only what changed since the last
+    one, and parts the cluster has since merged leave the mirror too. Reads
+    union it with the local results, so there is nothing to merge. The copy a
+    push left on the cluster is skipped, as it holds this machine's own runs.
 
     No run id is involved: every commit of an experiment writes into one shared
     results dir on the cluster, so this always covers the whole experiment.
@@ -680,9 +680,6 @@ def fetch(experiment, *, config_path: str | Path | None = None) -> int:
     Args:
         experiment: The experiment to fetch.
         config_path: The ``cluster.toml`` to read, defaulting to the repo root's.
-
-    Returns:
-        The number of databases brought home.
 
     Raises:
         SystemExit: If nothing has been dispatched yet, or rsync fails.
@@ -704,32 +701,17 @@ def fetch(experiment, *, config_path: str | Path | None = None) -> int:
         print(f"[{experiment.name}] warning: a sweep is still in flight, these "
               f"are incomplete:\n" + leftover.rstrip(), file=sys.stderr)
 
-    parts = experiment.results_dir / f"{experiment.name}.parts"
-    parts.mkdir(parents=True, exist_ok=True)
-    found = 0
-    with tempfile.TemporaryDirectory() as staging:
-        proc = _run(["rsync", "-az", _remote_path(cfg, remote + "/"), staging + "/"])
-        _check_auth(cfg, proc.stderr)
-        if proc.returncode != 0:
-            raise SystemExit(f"rsync from {remote} failed\n{proc.stderr.strip()}")
-
-        staged = Path(staging)
-        merged = staged / f"{experiment.name}.db"
-        if merged.exists():
-            shutil.move(str(merged), parts / "part-cluster.db")
-            print(f"  {merged.name} -> {parts.name}/part-cluster.db", file=sys.stderr)
-            found += 1
-        # A sweep still in flight, or one whose merge job failed, leaves parts on
-        # the cluster. They hold real results, so bring them too.
-        for index, part in enumerate(sorted(staged.glob("*.parts/part-*.db"))):
-            shutil.move(str(part), parts / f"part-cluster-{index}.db")
-            print(f"  {part.name} -> {parts.name}/part-cluster-{index}.db",
-                  file=sys.stderr)
-            found += 1
-
-    if not found:
+    mirror = experiment.results_dir / _CLUSTER_MIRROR
+    mirror.mkdir(parents=True, exist_ok=True)
+    proc = _run([
+        "rsync", "-az", "--delete", f"--exclude=/{_LOCAL_MIRROR}/",
+        _remote_path(cfg, remote + "/"), f"{mirror}/",
+    ])
+    _check_auth(cfg, proc.stderr)
+    if proc.returncode != 0:
+        raise SystemExit(f"rsync from {remote} failed\n{proc.stderr.strip()}")
+    if not any(mirror.rglob("*.db")):
         raise SystemExit(f"[{experiment.name}] no results at {remote} yet")
-    return found
 
 
 def push(experiment, *, config_path: str | Path | None = None) -> None:

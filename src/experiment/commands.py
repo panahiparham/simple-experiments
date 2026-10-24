@@ -605,7 +605,7 @@ def _sync(experiment: Experiment, cluster: _Cluster, argv: list[str]) -> None:
         return
 
     slurm.fetch(experiment, config_path=cluster.config)
-    print(f"[{experiment.name}] merged {merge_parts(experiment)} run(s)")
+    print(f"[{experiment.name}] mirrored the cluster's results")
 
 
 def _dispatch(
