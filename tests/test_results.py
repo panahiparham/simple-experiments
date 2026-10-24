@@ -150,7 +150,7 @@ def test_a_redundant_result_is_stored_compressed(experiment):
         writer.save(shard, [arrays for _ in shard.runs])
     stored = _query_ro(
         _part_path(experiment, shard.component, "0"),
-        "SELECT result FROM runs WHERE run_id = ?",
+        "SELECT value FROM metrics WHERE run_id = ?",
         (shard.runs[0].id,),
     )[0][0]
     assert len(stored) < arrays["reward"].nbytes / 10, (
@@ -208,6 +208,14 @@ def test_deleting_a_run_removes_it_from_completed(experiment):
     run_id = next(iter(completed(experiment)["a"]))
     assert delete_runs(experiment, "a", [run_id]) == 1
     assert run_id not in completed(experiment)["a"]
+
+
+def test_deleting_a_run_removes_its_arrays(experiment):
+    run_everything(experiment)
+    merge_parts(experiment)
+    run_id = next(iter(completed(experiment)["a"]))
+    delete_runs(experiment, "a", [run_id])
+    assert load_result(experiment, "a", run_id) == {}
 
 
 def test_deleting_leaves_other_runs_and_components_untouched(experiment):

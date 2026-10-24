@@ -1,8 +1,9 @@
 """Where an experiment's results live.
 
-One SQLite database per component, holding one row per run: the run's id, the
-id of its config, its seed, the config itself, and whatever the run produced as
-a binary blob.
+One SQLite database per component, holding one row per run - its id, the id of
+its config, its seed and the config itself - and one row per metric a run
+produced, its array stored as compressed ``.npy`` bytes. The harness never names
+a metric: they are whatever the shard function returned.
 
 A shared SQLite file is not safe under concurrent writes, and on a cluster
 filesystem it is worse, so a worker never writes a component's database
@@ -28,6 +29,7 @@ import io
 import json
 import shutil
 import sqlite3
+import zlib
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Self
@@ -57,11 +59,16 @@ CREATE TABLE IF NOT EXISTS runs (
     run_id     TEXT PRIMARY KEY,
     config_id  TEXT NOT NULL,
     seed       INTEGER NOT NULL,
-    config     TEXT NOT NULL,
-    result     BLOB
+    config     TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS metrics (
+    run_id     TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    value      BLOB NOT NULL,
+    PRIMARY KEY (run_id, name)
 );
 """
-_COLUMNS = "run_id, config_id, seed, config, result"
+_COLUMNS = "run_id, config_id, seed, config"
 
 # Each machine keeps a read-only copy of the other's results: the cluster's
 # under ``cluster/`` locally, and the local machine's under ``local/`` there.
@@ -135,7 +142,7 @@ def _connect_write(path: str | Path) -> sqlite3.Connection:
 
 
 def _ensure_table(conn: sqlite3.Connection) -> None:
-    """Create the runs table if it is not there yet."""
+    """Create the runs and metrics tables if they are not there yet."""
     conn.executescript(_SCHEMA)
 
 
@@ -160,39 +167,16 @@ def _query_ro(path: str | Path, sql: str, params: tuple = ()) -> list[tuple]:
         conn.close()
 
 
-def _to_blob(result: dict[str, np.ndarray]) -> bytes | None:
-    """Serialise one run's result arrays.
-
-    Args:
-        result: The run's named arrays.
-
-    Returns:
-        The arrays as npz bytes, or ``None`` if the run produced none.
-    """
-    if not result:
-        return None
+def _to_blob(array: np.ndarray) -> bytes:
+    """Serialise one metric as compressed ``.npy`` bytes."""
     buffer = io.BytesIO()
-    np.savez_compressed(
-        buffer,
-        allow_pickle=False,
-        **{k: np.asarray(v) for k, v in result.items()},
-    )
-    return buffer.getvalue()
+    np.save(buffer, np.asarray(array), allow_pickle=False)
+    return zlib.compress(buffer.getvalue())
 
 
-def _from_blob(blob: bytes | None) -> dict[str, np.ndarray]:
-    """Read back a result blob.
-
-    Args:
-        blob: The stored bytes, or ``None``.
-
-    Returns:
-        The run's named arrays, empty if there were none.
-    """
-    if not blob:
-        return {}
-    with np.load(io.BytesIO(blob)) as data:
-        return {name: data[name] for name in data.files}
+def _from_blob(blob: bytes) -> np.ndarray:
+    """Read back one stored metric."""
+    return np.load(io.BytesIO(zlib.decompress(blob)), allow_pickle=False)
 
 
 def completed(experiment: Experiment) -> dict[str, set[str]]:
@@ -260,20 +244,26 @@ class ResultWriter:
                 f"run(s) but {len(results)} result(s) came back"
             )
         conn = self._connection(shard.component)
-        before = conn.total_changes
+        stored = 0
         for run, result in zip(shard.runs, results, strict=True):
-            conn.execute(
-                f"INSERT OR IGNORE INTO runs ({_COLUMNS}) VALUES (?, ?, ?, ?, ?)",
+            inserted = conn.execute(
+                f"INSERT OR IGNORE INTO runs ({_COLUMNS}) VALUES (?, ?, ?, ?)",
                 (
                     run.id,
                     config_id(run.config),
                     int(run.seed),
                     json.dumps(as_point(run.config)),
-                    _to_blob(result),
                 ),
+            ).rowcount
+            if not inserted:
+                continue
+            conn.executemany(
+                "INSERT INTO metrics (run_id, name, value) VALUES (?, ?, ?)",
+                [(run.id, name, _to_blob(value)) for name, value in result.items()],
             )
+            stored += 1
         conn.commit()
-        return conn.total_changes - before
+        return stored
 
     def close(self) -> None:
         """Close every part database this writer opened."""
@@ -327,14 +317,13 @@ def _merge_component(experiment: Experiment, component: str) -> int:
         _ensure_table(conn)
         for part in parts:
             conn.execute("ATTACH DATABASE ? AS part", (str(part),))
-            before = conn.total_changes
-            conn.execute(
+            merged += conn.execute(
                 f"INSERT OR IGNORE INTO runs ({_COLUMNS}) "
                 f"SELECT {_COLUMNS} FROM part.runs"
-            )
+            ).rowcount
+            conn.execute("INSERT OR IGNORE INTO metrics SELECT * FROM part.metrics")
             conn.commit()
             conn.execute("DETACH DATABASE part")
-            merged += conn.total_changes - before
     finally:
         conn.close()
 
@@ -386,6 +375,9 @@ def delete_runs(experiment: Experiment, component: str, run_ids: Sequence[str]) 
                 f"DELETE FROM runs WHERE run_id IN ({placeholders}) RETURNING run_id",
                 tuple(run_ids),
             ).fetchall()
+            conn.execute(
+                f"DELETE FROM metrics WHERE run_id IN ({placeholders})", tuple(run_ids)
+            )
             conn.commit()
         finally:
             conn.close()
@@ -462,11 +454,11 @@ def load_result(
     Returns:
         The run's named arrays, empty if it stored none.
     """
-    query = "SELECT result FROM runs WHERE run_id = ?"
+    query = "SELECT name, value FROM metrics WHERE run_id = ?"
     for path in _database_paths(experiment, component):
         rows = _query_ro(path, query, (run_id,))
-        if rows and rows[0][0] is not None:
-            return _from_blob(rows[0][0])
+        if rows:
+            return {name: _from_blob(value) for name, value in rows}
     return {}
 
 

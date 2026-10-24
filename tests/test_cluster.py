@@ -870,8 +870,8 @@ def store(path: Path, *run_ids: str) -> None:
     conn = _connect_write(path)
     _ensure_table(conn)
     conn.executemany(
-        "INSERT INTO runs VALUES (?, ?, ?, ?, ?)",
-        [(run_id, "cfg", 0, "{}", None) for run_id in run_ids],
+        "INSERT INTO runs VALUES (?, ?, ?, ?)",
+        [(run_id, "cfg", 0, "{}") for run_id in run_ids],
     )
     conn.commit()
     conn.close()

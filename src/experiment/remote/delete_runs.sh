@@ -12,16 +12,17 @@ from pathlib import Path
 
 results, component, *run_ids = sys.argv[1:]
 placeholders = ", ".join("?" for _ in run_ids)
-where = f"FROM runs WHERE run_id IN ({placeholders})"
+where = f"WHERE run_id IN ({placeholders})"
 paths = [*Path(results).rglob(f"{component}.db")]
 paths += Path(results).rglob(f"*.parts/{component}/part-*.db")
 removed = set()
 for path in sorted(paths):
     conn = sqlite3.connect(str(path), timeout=60.0)
     try:
-        found = conn.execute(f"SELECT run_id {where}", run_ids)
+        found = conn.execute(f"SELECT run_id FROM runs {where}", run_ids)
         removed.update(run for (run,) in found)
-        conn.execute(f"DELETE {where}", run_ids)
+        conn.execute(f"DELETE FROM runs {where}", run_ids)
+        conn.execute(f"DELETE FROM metrics {where}", run_ids)
         conn.commit()
     finally:
         conn.close()
