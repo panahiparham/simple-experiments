@@ -14,7 +14,7 @@ import pytest
 
 from experiment.design import Component, Experiment
 from experiment.hypers import traced
-from experiment.plan import plan_experiment
+from experiment.plan import Shard, plan_experiment
 from experiment.results import (
     ResultWriter,
     _part_path,
@@ -124,6 +124,31 @@ def test_saving_a_run_twice_stores_it_once(experiment):
             writer.save(shard, [result(r.seed) for r in shard.runs])
     merge_parts(experiment)
     assert load_runs(experiment, shard.component).height == len(shard.runs)
+
+
+def stored_values(experiment: Experiment, shard: Shard, *names: str) -> dict:
+    """Each named metric's values for the shard's first run, or None."""
+    return {
+        name: None if pair is None else pair[1].tolist()
+        for name in names
+        for pair in load_metric(experiment, shard.component, name, [shard.runs[0].id])
+    }
+
+
+def test_saving_a_run_again_replaces_every_metric_it_stored(experiment):
+    """A rerun's result replaces the stored one whole: changed values are
+    overwritten and a metric the rerun did not return is gone.
+    """
+    shard = plan_experiment(experiment)[0]
+    old = {"reward": (np.arange(2), np.zeros(2)), "loss": (np.arange(1), np.ones(1))}
+    new = {"reward": (np.arange(2), np.ones(2))}
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [old])
+        writer.save(shard, [new])
+    merge_parts(experiment)
+
+    stored = stored_values(experiment, shard, "reward", "loss")
+    assert stored == {"reward": [1.0, 1.0], "loss": None}
 
 
 def test_a_result_per_run_is_required(experiment):
