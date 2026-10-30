@@ -51,6 +51,7 @@ __all__ = [
     "load_metric",
     "load_runs",
     "merge_parts",
+    "stored_runs",
 ]
 
 
@@ -199,11 +200,24 @@ def _pair_from_blobs(steps: bytes, values: bytes) -> tuple[np.ndarray, np.ndarra
 
 
 def completed(experiment: Experiment) -> dict[str, set[str]]:
-    """List the runs an experiment has already stored, per component.
+    """List the runs an experiment has finished, per component.
 
     The result is what a plan filters against, so it unions the merged database
     with every part still on disk: a run counts as done whether or not the sweep
     that produced it got as far as merging.
+
+    Args:
+        experiment: The experiment to look up.
+
+    Returns:
+        A ``{component name: {run id}}`` mapping, with an entry for every
+        component the experiment declares even when it has no results yet.
+    """
+    return stored_runs(experiment)
+
+
+def stored_runs(experiment: Experiment) -> dict[str, set[str]]:
+    """List every run an experiment has stored, per component, finished or not.
 
     Args:
         experiment: The experiment to look up.

@@ -34,6 +34,7 @@ from experiment.results import (
     completed,
     delete_runs,
     merge_parts,
+    stored_runs,
 )
 from experiment.runner import ShardFn, run_shards
 
@@ -219,7 +220,7 @@ def _delete_targets(
         raise SystemExit("delete needs --component")
     picked = _one_component(experiment, args.component)
     if args.seeds is None:
-        return picked.name, sorted(completed(experiment)[picked.name])
+        return picked.name, sorted(stored_runs(experiment)[picked.name])
     overrides = parse_overrides(args.overrides)
     seeds = set(args.seeds)
     targets = [run.id for run in component_runs(picked, overrides) if run.seed in seeds]
@@ -378,7 +379,7 @@ def _fresh_targets(
         return {only.name: [run.id for run in component_runs(only, overrides)]}
     if args.component is None:
         return None
-    stored = completed(experiment)
+    stored = stored_runs(experiment)
     picked = _select(experiment, args.component)
     return {c.name: sorted(stored[c.name]) for c in picked}
 
