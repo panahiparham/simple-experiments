@@ -590,3 +590,36 @@ def test_a_metric_loads_across_parts_and_mirrors(experiment):
     loaded = load_metric(experiment, "a", "reward", run_ids)
 
     assert [values[0] for _, values in loaded] == [0.0, 1.0, 2.0]
+
+
+def test_a_metric_loads_from_the_copy_that_finished_the_run(experiment):
+    """With a complete merged copy and a newer partial one, every metric of
+    the run loads from the complete copy.
+    """
+    shard = plan_experiment(experiment)[0]
+    full = {"reward": (np.arange(2), np.zeros(2)), "loss": (np.arange(1), np.ones(1))}
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [full])
+    merge_parts(experiment)
+    with ResultWriter(experiment, "1") as writer:
+        writer.save(shard, [{"reward": (np.arange(2), np.ones(2))}])
+
+    stored = stored_values(recording(experiment, "reward", "loss"), shard, "reward")
+
+    assert stored == {"reward": [0.0, 0.0]}
+
+
+def test_a_metric_loads_from_the_newest_copy_when_none_finished(experiment):
+    """When no copy holds every recorded metric, the run loads from the
+    newest one: an unmerged part before the merged database.
+    """
+    shard = plan_experiment(experiment)[0]
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [{"reward": (np.arange(2), np.zeros(2))}])
+    merge_parts(experiment)
+    with ResultWriter(experiment, "1") as writer:
+        writer.save(shard, [{"reward": (np.arange(2), np.ones(2))}])
+
+    stored = stored_values(recording(experiment, "loss"), shard, "reward")
+
+    assert stored == {"reward": [1.0, 1.0]}
