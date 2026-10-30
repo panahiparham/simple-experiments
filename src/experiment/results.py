@@ -244,15 +244,15 @@ class ResultWriter:
     def save(self, shard: Shard, results: Sequence[dict]) -> int:
         """Store one result per run of a shard.
 
-        Storing a run that is already there is a no-op, so re-running a shard
-        never overwrites or duplicates a result.
+        Storing a run that is already there replaces every metric it stored,
+        so a run's metrics always come from one execution.
 
         Args:
             shard: The shard whose runs were computed.
             results: One ``{name: (steps, values)}`` result per run, in shard order.
 
         Returns:
-            The number of runs actually stored, excluding any already present.
+            The number of runs stored.
 
         Raises:
             ValueError: If there is not exactly one result per run, or a
@@ -268,9 +268,8 @@ class ResultWriter:
             for result in results
         ]
         conn = self._connection(shard.component)
-        stored = 0
         for run, run_blobs in zip(shard.runs, blobs, strict=True):
-            inserted = conn.execute(
+            conn.execute(
                 f"INSERT OR IGNORE INTO runs ({_COLUMNS}) VALUES (?, ?, ?, ?)",
                 (
                     run.id,
@@ -278,16 +277,14 @@ class ResultWriter:
                     int(run.seed),
                     json.dumps(as_point(run.config)),
                 ),
-            ).rowcount
-            if not inserted:
-                continue
+            )
+            conn.execute("DELETE FROM metrics WHERE run_id = ?", (run.id,))
             conn.executemany(
                 "INSERT INTO metrics (run_id, name, steps, value) VALUES (?, ?, ?, ?)",
                 [(run.id, name, *pair) for name, pair in run_blobs.items()],
             )
-            stored += 1
         conn.commit()
-        return stored
+        return len(shard.runs)
 
     def close(self) -> None:
         """Close every part database this writer opened."""

@@ -117,11 +117,13 @@ def test_a_finished_experiment_plans_no_more_work(experiment):
 
 
 def test_saving_a_run_twice_stores_it_once(experiment):
-    plan = plan_experiment(experiment)
+    """Saving a shard again keeps one row per run."""
+    shard = plan_experiment(experiment)[0]
     with ResultWriter(experiment, "0") as writer:
-        first = writer.save(plan[0], [result(r.seed) for r in plan[0].runs])
-        again = writer.save(plan[0], [result(r.seed) for r in plan[0].runs])
-    assert (first, again) == (len(plan[0].runs), 0)
+        for _ in range(2):
+            writer.save(shard, [result(r.seed) for r in shard.runs])
+    merge_parts(experiment)
+    assert load_runs(experiment, shard.component).height == len(shard.runs)
 
 
 def test_a_result_per_run_is_required(experiment):
