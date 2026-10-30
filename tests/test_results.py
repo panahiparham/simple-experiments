@@ -23,6 +23,7 @@ from experiment.results import (
     _part_path,
     _parts_dir,
     _query_ro,
+    _to_blob,
     clear_results,
     completed,
     database_path,
@@ -93,6 +94,33 @@ def test_each_component_is_merged_into_its_own_database(experiment):
 # --- schema versions --------------------------------------------------------
 
 
+SCHEMA_1 = """
+CREATE TABLE runs (
+    run_id TEXT PRIMARY KEY, config_id TEXT NOT NULL, seed INTEGER NOT NULL,
+    config TEXT NOT NULL
+);
+CREATE TABLE metrics (
+    run_id TEXT NOT NULL, name TEXT NOT NULL, value BLOB NOT NULL,
+    PRIMARY KEY (run_id, name)
+);
+"""
+
+
+def create_schema_1_database(path: Path, metrics: dict[str, np.ndarray]) -> None:
+    """A database as simple-experiments 0.1.0 created it, with no version stamp,
+    holding one run ``old`` that stored ``metrics``.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.executescript(SCHEMA_1)
+        conn.execute("INSERT INTO runs VALUES ('old', 'c', 0, '{\"NAME\": \"dqn\"}')")
+        conn.executemany(
+            "INSERT INTO metrics VALUES ('old', ?, ?)",
+            [(name, _to_blob(value)) for name, value in metrics.items()],
+        )
+        conn.commit()
+
+
 def stamp(path: Path, version: int) -> None:
     with closing(sqlite3.connect(path)) as conn:
         conn.execute(f"PRAGMA user_version = {version}")
@@ -124,6 +152,55 @@ def test_writing_to_a_database_on_a_newer_schema_is_refused(experiment):
     stamp(database_path(experiment, "a"), _SCHEMA_VERSION + 1)
     with pytest.raises(RuntimeError, match=f"schema {_SCHEMA_VERSION + 1}"):
         delete_runs(experiment, "a", ["x"])
+
+
+# --- migrating from schema 1 ------------------------------------------------
+
+
+def merge_a_sweep(experiment: Experiment) -> None:
+    """Store and merge every run of the experiment, as a new sweep would."""
+    with ResultWriter(experiment, "0") as writer:
+        for shard in plan_experiment(experiment):
+            writer.save(shard, [result(r.seed) for r in shard.runs])
+    merge_parts(experiment)
+
+
+@pytest.mark.parametrize(
+    ("lengths", "returns", "steps", "values"),
+    [
+        pytest.param(
+            [3, 2, 4], [1.0, 2.0, 3.0], [3, 5, 9], [1.0, 2.0, 3.0], id="one env"
+        ),
+        pytest.param(
+            [[2, 3, 0], [4, 0, 0]],
+            [[1.0, 2.0, 0.0], [3.0, 0.0, 0.0]],
+            [4, 8, 10],
+            [1.0, 3.0, 2.0],
+            id="padded envs",
+        ),
+        pytest.param([], [], [], [], id="no episodes"),
+    ],
+)
+def test_episode_metrics_are_stepped_at_the_end_of_each_episode(
+    experiment, lengths, returns, steps, values
+):
+    """Writing to a 0.1.0 database pairs each episode with the step of the run it
+    ended at: every env takes one step per env step, so an env's own step counts
+    ``n_envs`` steps of the run, and the envs' episodes interleave in time.
+    """
+    metrics = {
+        "episode_length": np.array(lengths, dtype=np.int32),
+        "undiscounted_return": np.array(returns, dtype=np.float32),
+    }
+    create_schema_1_database(database_path(experiment, "a"), metrics)
+    merge_a_sweep(experiment)
+
+    [(return_steps, migrated)] = load_metric(
+        experiment, "a", "undiscounted_return", ["old"]
+    )
+    [(length_steps, _)] = load_metric(experiment, "a", "episode_length", ["old"])
+    assert return_steps.tolist() == length_steps.tolist() == steps
+    assert migrated.tolist() == values
 
 
 # --- writing ----------------------------------------------------------------
