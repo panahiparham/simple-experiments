@@ -196,9 +196,11 @@ def test_episode_metrics_are_stepped_at_the_end_of_each_episode(
     merge_a_sweep(experiment)
 
     [(return_steps, migrated)] = load_metric(
-        experiment, "a", "undiscounted_return", ["old"]
+        experiment, "a", "interaction.return", ["old"]
     )
-    [(length_steps, _)] = load_metric(experiment, "a", "episode_length", ["old"])
+    [(length_steps, _)] = load_metric(
+        experiment, "a", "interaction.episode_length", ["old"]
+    )
     assert return_steps.tolist() == length_steps.tolist() == steps
     assert migrated.tolist() == values
 
@@ -211,7 +213,7 @@ def test_migrated_episode_metrics_are_float32(experiment):
     }
     create_schema_1_database(database_path(experiment, "a"), metrics)
     merge_a_sweep(experiment)
-    for name in metrics:
+    for name in ("interaction.episode_length", "interaction.return"):
         [(_, values)] = load_metric(experiment, "a", name, ["old"])
         assert values.dtype == np.float32
 
@@ -250,7 +252,7 @@ def test_loading_from_a_schema_1_database_migrates_it(experiment, where):
         "undiscounted_return": np.array([1.0, 2.0], dtype=np.float32),
     }
     create_schema_1_database(where(experiment), metrics)
-    [(steps, values)] = load_metric(experiment, "a", "undiscounted_return", ["old"])
+    [(steps, values)] = load_metric(experiment, "a", "interaction.return", ["old"])
     assert steps.tolist() == [3, 5]
     assert values.tolist() == [1.0, 2.0]
 
@@ -263,7 +265,7 @@ def test_a_schema_1_part_merges_once_migrated(experiment):
     }
     create_schema_1_database(_part_path(experiment, "a", "0"), metrics)
     assert merge_parts(experiment) == 1
-    [(steps, _)] = load_metric(experiment, "a", "undiscounted_return", ["old"])
+    [(steps, _)] = load_metric(experiment, "a", "interaction.return", ["old"])
     assert steps.tolist() == [3, 5]
 
 

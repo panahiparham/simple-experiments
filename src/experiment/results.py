@@ -74,8 +74,12 @@ CREATE TABLE IF NOT EXISTS metrics (
 """
 _SCHEMA_VERSION = 2
 # The only metrics simple-experiments 0.1.0 stored for its users, rl-jax and
-# gen-gen: one return and one length per episode.
-_EPISODE_METRICS = {"episode_length", "undiscounted_return"}
+# gen-gen: one return and one length per episode, renamed as rl-jax's metric
+# recording names them.
+_EPISODE_METRICS = {
+    "episode_length": "interaction.episode_length",
+    "undiscounted_return": "interaction.return",
+}
 _COLUMNS = "run_id, config_id, seed, config"
 
 # Each machine keeps a read-only copy of the other's results: the cluster's
@@ -205,14 +209,15 @@ def _migrate_schema_1(conn: sqlite3.Connection, path: Path) -> None:
 
         rows = []
         for run, metrics in stored.items():
-            if set(metrics) != _EPISODE_METRICS:
+            if set(metrics) != set(_EPISODE_METRICS):
                 raise RuntimeError(
                     f"{path} cannot be migrated: run {run} stores "
                     f"{sorted(metrics)}, but only {sorted(_EPISODE_METRICS)} "
                     "migrate from schema 1"
                 )
             for name, series in _episode_series(metrics).items():
-                rows.append((run, name, *_series_blobs(name, series)))
+                new_name = _EPISODE_METRICS[name]
+                rows.append((run, new_name, *_series_blobs(new_name, series)))
 
         conn.execute("DROP TABLE metrics")
         conn.execute(_METRICS_TABLE)
