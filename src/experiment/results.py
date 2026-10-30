@@ -55,13 +55,15 @@ __all__ = [
 ]
 
 
-_SCHEMA = """
+_RUNS_TABLE = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id     TEXT PRIMARY KEY,
     config_id  TEXT NOT NULL,
     seed       INTEGER NOT NULL,
     config     TEXT NOT NULL
 );
+"""
+_METRICS_TABLE = """
 CREATE TABLE IF NOT EXISTS metrics (
     run_id     TEXT NOT NULL,
     name       TEXT NOT NULL,
@@ -149,26 +151,31 @@ def _connect_write(path: str | Path) -> sqlite3.Connection:
 
 
 def _require_current_schema(conn: sqlite3.Connection, path: Path) -> None:
-    """Refuse a database whose schema this version cannot read.
-
-    A database without tables is new and has no schema yet. One with tables
-    but no stamp predates versioning, which makes it schema 1.
-    """
-    if conn.execute("SELECT 1 FROM sqlite_master").fetchone() is None:
-        return
-    version = conn.execute("PRAGMA user_version").fetchone()[0] or 1
-    if version != _SCHEMA_VERSION:
+    """Refuse a database whose schema this version cannot read."""
+    version = _schema_version(conn)
+    if version not in (None, _SCHEMA_VERSION):
         raise RuntimeError(
             f"{path} holds results in schema {version}, but this version of "
             f"simple-experiments reads schema {_SCHEMA_VERSION}"
         )
 
 
+def _schema_version(conn: sqlite3.Connection) -> int | None:
+    """A database's schema version, or ``None`` while it has no tables.
+
+    Tables without a stamp predate versioning, which makes them schema 1.
+    """
+    if conn.execute("SELECT 1 FROM sqlite_master").fetchone() is None:
+        return None
+    return conn.execute("PRAGMA user_version").fetchone()[0] or 1
+
+
 def _ensure_table(conn: sqlite3.Connection) -> None:
     """Create the tables of a new database, stamped with the schema version."""
-    if conn.execute("SELECT 1 FROM sqlite_master").fetchone() is None:
+    if _schema_version(conn) is None:
         conn.executescript(
-            f"BEGIN; {_SCHEMA} PRAGMA user_version = {_SCHEMA_VERSION}; COMMIT;"
+            f"BEGIN; {_RUNS_TABLE} {_METRICS_TABLE} "
+            f"PRAGMA user_version = {_SCHEMA_VERSION}; COMMIT;"
         )
 
 
