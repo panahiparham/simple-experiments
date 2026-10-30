@@ -216,6 +216,21 @@ def test_migrated_episode_metrics_are_float32(experiment):
         assert values.dtype == np.float32
 
 
+def test_a_migrated_database_keeps_its_runs(experiment):
+    """Migrating rewrites metrics only: the old run is still stored beside the
+    sweep merged into it.
+    """
+    metrics = {
+        "episode_length": np.array([3], dtype=np.int32),
+        "undiscounted_return": np.array([1.0], dtype=np.float32),
+    }
+    create_schema_1_database(database_path(experiment, "a"), metrics)
+    merge_a_sweep(experiment)
+    run_ids = load_runs(experiment, "a")["run_id"].to_list()
+    assert "old" in run_ids
+    assert len(run_ids) == 4
+
+
 # --- writing ----------------------------------------------------------------
 
 
