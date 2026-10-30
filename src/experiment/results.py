@@ -73,6 +73,9 @@ CREATE TABLE IF NOT EXISTS metrics (
 );
 """
 _SCHEMA_VERSION = 2
+# The only metrics simple-experiments 0.1.0 stored for its users, rl-jax and
+# gen-gen: one return and one length per episode.
+_EPISODE_METRICS = {"episode_length", "undiscounted_return"}
 _COLUMNS = "run_id, config_id, seed, config"
 
 # Each machine keeps a read-only copy of the other's results: the cluster's
@@ -146,6 +149,8 @@ def _connect_write(path: str | Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=60.0)
     conn.execute("PRAGMA busy_timeout=60000")
+    if _schema_version(conn) == 1:
+        _migrate_schema_1(conn, path)
     _require_current_schema(conn, path)
     return conn
 
@@ -168,6 +173,66 @@ def _schema_version(conn: sqlite3.Connection) -> int | None:
     if conn.execute("SELECT 1 FROM sqlite_master").fetchone() is None:
         return None
     return conn.execute("PRAGMA user_version").fetchone()[0] or 1
+
+
+def _migrate_schema_1(conn: sqlite3.Connection, path: Path) -> None:
+    """Pair each episode metric of a 0.1.0 database with its steps.
+
+    The database is left untouched unless every run migrates. Its version is
+    read again under the write lock, since another process may have migrated
+    it after this one opened it.
+    """
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if _schema_version(conn) != 1:
+            return
+        stored: dict[str, dict[str, np.ndarray]] = {}
+        query = "SELECT run_id, name, value FROM metrics"
+        for run, name, blob in conn.execute(query):
+            stored.setdefault(run, {})[name] = _from_blob(blob)
+
+        rows = []
+        for run, metrics in stored.items():
+            if set(metrics) != _EPISODE_METRICS:
+                raise RuntimeError(
+                    f"{path} cannot be migrated: run {run} stores "
+                    f"{sorted(metrics)}, but only {sorted(_EPISODE_METRICS)} "
+                    "migrate from schema 1"
+                )
+            for name, series in _episode_series(metrics).items():
+                rows.append((run, name, *_series_blobs(name, series)))
+
+        conn.execute("DROP TABLE metrics")
+        conn.execute(_METRICS_TABLE)
+        conn.executemany(
+            "INSERT INTO metrics (run_id, name, steps, value) VALUES (?, ?, ?, ?)",
+            rows,
+        )
+        conn.execute("PRAGMA user_version = 2")
+
+
+def _episode_series(
+    metrics: dict[str, np.ndarray],
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Each episode metric as one float32 series, as rl-jax now records every
+    metric, stepped at the step its episode ended.
+
+    A metric holds one row of episodes per env, padded with zero-length
+    episodes, or a single row with no env axis. Every env steps once per env
+    step of the run, so an episode ending at its env's step ``t`` ends at step
+    ``t * n_envs`` of the run.
+    """
+    lengths = np.atleast_2d(metrics["episode_length"])
+    ended = lengths > 0
+    env_steps = (np.cumsum(lengths, axis=1) * len(lengths))[ended]
+    order = np.argsort(env_steps, kind="stable")
+    return {
+        name: (
+            env_steps[order],
+            np.atleast_2d(values)[ended][order].astype(np.float32),
+        )
+        for name, values in metrics.items()
+    }
 
 
 def _ensure_table(conn: sqlite3.Connection) -> None:
