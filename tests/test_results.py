@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import dataclasses
 import sqlite3
+from contextlib import closing
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -88,6 +90,14 @@ def test_each_component_is_merged_into_its_own_database(experiment):
     assert stored == ["a.db", "b.db"]
 
 
+# --- schema versions --------------------------------------------------------
+
+
+def stamp(path: Path, version: int) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(f"PRAGMA user_version = {version}")
+
+
 def test_new_databases_record_the_schema_version(experiment):
     """A worker's part and the merged database both carry the current version."""
     run_everything(experiment)
@@ -96,6 +106,24 @@ def test_new_databases_record_the_schema_version(experiment):
     merge_parts(experiment)
     merged = database_path(experiment, "a")
     assert _query_ro(merged, "PRAGMA user_version") == [(_SCHEMA_VERSION,)]
+
+
+def test_reading_a_database_on_a_newer_schema_is_refused(experiment):
+    """Results written by a newer simple-experiments are never misread."""
+    run_everything(experiment)
+    merge_parts(experiment)
+    stamp(database_path(experiment, "a"), _SCHEMA_VERSION + 1)
+    with pytest.raises(RuntimeError, match=f"schema {_SCHEMA_VERSION + 1}"):
+        load_runs(experiment, "a")
+
+
+def test_writing_to_a_database_on_a_newer_schema_is_refused(experiment):
+    """A schema this version does not know is never modified."""
+    run_everything(experiment)
+    merge_parts(experiment)
+    stamp(database_path(experiment, "a"), _SCHEMA_VERSION + 1)
+    with pytest.raises(RuntimeError, match=f"schema {_SCHEMA_VERSION + 1}"):
+        delete_runs(experiment, "a", ["x"])
 
 
 # --- writing ----------------------------------------------------------------
