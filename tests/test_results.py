@@ -20,6 +20,7 @@ from experiment.plan import Shard, plan_experiment
 from experiment.results import (
     _SCHEMA_VERSION,
     ResultWriter,
+    _migrate_schema_1,
     _part_path,
     _parts_dir,
     _query_ro,
@@ -265,6 +266,24 @@ def test_a_schema_1_part_merges_once_migrated(experiment):
     }
     create_schema_1_database(_part_path(experiment, "a", "0"), metrics)
     assert merge_parts(experiment) == 1
+    [(steps, _)] = load_metric(experiment, "a", "interaction.return", ["old"])
+    assert steps.tolist() == [3, 5]
+
+
+def test_a_database_another_process_migrated_first_is_left_alone(experiment):
+    """Two processes may open a 0.1.0 database at once. The one that loses the
+    race finds it migrated under the write lock, rather than failing on the
+    renamed metrics or rewriting them.
+    """
+    path = database_path(experiment, "a")
+    metrics = {
+        "episode_length": np.array([3, 2], dtype=np.int32),
+        "undiscounted_return": np.array([1.0, 2.0], dtype=np.float32),
+    }
+    create_schema_1_database(path, metrics)
+    with closing(sqlite3.connect(path)) as late:
+        load_runs(experiment, "a")
+        _migrate_schema_1(late, path)
     [(steps, _)] = load_metric(experiment, "a", "interaction.return", ["old"])
     assert steps.tolist() == [3, 5]
 
