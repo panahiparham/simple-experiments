@@ -231,6 +231,18 @@ def test_a_migrated_database_keeps_its_runs(experiment):
     assert len(run_ids) == 4
 
 
+def test_a_database_with_another_metric_is_left_untouched(experiment):
+    """A metric 0.1.0's users never stored has no known steps, so the database
+    is refused whole rather than partly migrated.
+    """
+    path = database_path(experiment, "a")
+    create_schema_1_database(path, {"loss": np.arange(3.0)})
+    before = path.read_bytes()
+    with pytest.raises(RuntimeError, match="loss"):
+        merge_a_sweep(experiment)
+    assert path.read_bytes() == before
+
+
 # --- writing ----------------------------------------------------------------
 
 
