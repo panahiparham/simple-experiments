@@ -107,9 +107,12 @@ def _part_paths(experiment: Experiment, component: str) -> list[Path]:
 
 
 def _databases_in(root: Path, experiment: Experiment, component: str) -> list[Path]:
-    """A component's merged database under ``root``, then its parts there."""
+    """A component's parts under ``root``, then its merged database there.
+
+    Parts come first because they hold runs newer than the merge.
+    """
     parts = root / f"{experiment.name}.parts" / component
-    return sorted(root.glob(f"{component}.db")) + sorted(parts.glob("part-*.db"))
+    return sorted(parts.glob("part-*.db")) + sorted(root.glob(f"{component}.db"))
 
 
 def _mirrored_paths(experiment: Experiment, component: str) -> list[Path]:
