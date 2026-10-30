@@ -231,6 +231,30 @@ def test_a_migrated_database_keeps_its_runs(experiment):
     assert len(run_ids) == 4
 
 
+@pytest.mark.parametrize(
+    "where",
+    [
+        pytest.param(lambda e: database_path(e, "a"), id="merged"),
+        pytest.param(lambda e: _part_path(e, "a", "0"), id="part"),
+        pytest.param(lambda e: e.results_dir / "cluster" / "a.db", id="cluster"),
+        pytest.param(lambda e: e.results_dir / "local" / "a.db", id="local"),
+    ],
+)
+def test_loading_from_a_schema_1_database_migrates_it(experiment, where):
+    """Loading results is enough to upgrade a 0.1.0 database, wherever it is: a
+    notebook never writes, and a mirror is read before the other machine has
+    upgraded its own copy.
+    """
+    metrics = {
+        "episode_length": np.array([3, 2], dtype=np.int32),
+        "undiscounted_return": np.array([1.0, 2.0], dtype=np.float32),
+    }
+    create_schema_1_database(where(experiment), metrics)
+    [(steps, values)] = load_metric(experiment, "a", "undiscounted_return", ["old"])
+    assert steps.tolist() == [3, 5]
+    assert values.tolist() == [1.0, 2.0]
+
+
 def test_a_database_with_another_metric_is_left_untouched(experiment):
     """A metric 0.1.0's users never stored has no known steps, so the database
     is refused whole rather than partly migrated.
