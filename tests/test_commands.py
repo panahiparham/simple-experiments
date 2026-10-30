@@ -35,7 +35,7 @@ class Cfg:
 
 
 def process(configs, seeds):
-    return [{"reward": np.arange(2.0) + seed} for seed in seeds]
+    return [{"reward": (np.arange(2), np.arange(2.0) + seed)} for seed in seeds]
 
 
 def refuse(configs, seeds):
@@ -43,7 +43,7 @@ def refuse(configs, seeds):
 
 
 def recompute(configs, seeds):
-    return [{"reward": np.full(2, -1.0)} for _ in seeds]
+    return [{"reward": (np.arange(2), np.full(2, -1.0))} for _ in seeds]
 
 
 def rewards(experiment, component):
@@ -521,7 +521,7 @@ class Cfg:
 
 
 def process(configs, seeds):
-    return [{"reward": np.arange(2.0) + s} for s in seeds]
+    return [{"reward": (np.arange(2), np.arange(2.0) + s)} for s in seeds]
 
 
 EXPERIMENT = Experiment(
@@ -627,7 +627,7 @@ def process(configs, seeds):
         if time.monotonic() > deadline:
             raise TimeoutError("no other shard started")
         time.sleep(0.01)
-    return [{"reward": np.arange(2.0) + s} for s in seeds]
+    return [{"reward": (np.arange(2), np.arange(2.0) + s)} for s in seeds]
 
 
 EXPERIMENT = Experiment(

@@ -2,8 +2,9 @@
 
 One SQLite database per component, holding one row per run - its id, the id of
 its config, its seed and the config itself - and one row per metric a run
-produced, its array stored as compressed ``.npy`` bytes. The harness never names
-a metric: they are whatever the shard function returned.
+produced: the step of each value and the values, both stored as compressed
+``.npy`` bytes. The harness never names a metric: they are whatever the shard
+function returned.
 
 A shared SQLite file is not safe under concurrent writes, and on a cluster
 filesystem it is worse, so a worker never writes a component's database
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS metrics (
     run_id     TEXT NOT NULL,
     name       TEXT NOT NULL,
+    steps      BLOB NOT NULL,
     value      BLOB NOT NULL,
     PRIMARY KEY (run_id, name)
 );
@@ -178,6 +180,12 @@ def _from_blob(blob: bytes) -> np.ndarray:
     return np.load(io.BytesIO(zlib.decompress(blob)), allow_pickle=False)
 
 
+def _series_blobs(series: Sequence[np.ndarray]) -> tuple[bytes, bytes]:
+    """Serialise a metric's steps and values."""
+    steps, values = series
+    return _to_blob(np.asarray(steps, dtype=np.int64)), _to_blob(values)
+
+
 def completed(experiment: Experiment) -> dict[str, set[str]]:
     """List the runs an experiment has already stored, per component.
 
@@ -229,7 +237,7 @@ class ResultWriter:
 
         Args:
             shard: The shard whose runs were computed.
-            results: One ``{name: array}`` result per run, in shard order.
+            results: One ``{name: (steps, values)}`` result per run, in shard order.
 
         Returns:
             The number of runs actually stored, excluding any already present.
@@ -242,9 +250,13 @@ class ResultWriter:
                 f"shard of component {shard.component!r} has {len(shard.runs)} "
                 f"run(s) but {len(results)} result(s) came back"
             )
+        blobs = [
+            {name: _series_blobs(series) for name, series in result.items()}
+            for result in results
+        ]
         conn = self._connection(shard.component)
         stored = 0
-        for run, result in zip(shard.runs, results, strict=True):
+        for run, run_blobs in zip(shard.runs, blobs, strict=True):
             inserted = conn.execute(
                 f"INSERT OR IGNORE INTO runs ({_COLUMNS}) VALUES (?, ?, ?, ?)",
                 (
@@ -257,8 +269,8 @@ class ResultWriter:
             if not inserted:
                 continue
             conn.executemany(
-                "INSERT INTO metrics (run_id, name, value) VALUES (?, ?, ?)",
-                [(run.id, name, _to_blob(value)) for name, value in result.items()],
+                "INSERT INTO metrics (run_id, name, steps, value) VALUES (?, ?, ?, ?)",
+                [(run.id, name, *pair) for name, pair in run_blobs.items()],
             )
             stored += 1
         conn.commit()

@@ -55,7 +55,7 @@ def experiment(tmp_path) -> Experiment:
 
 
 def result(seed: int) -> dict:
-    return {"reward": np.arange(4.0) + seed}
+    return {"reward": (np.arange(1, 5), np.arange(4.0) + seed)}
 
 
 def run_everything(experiment: Experiment, num_workers: int = 1) -> None:
@@ -144,7 +144,8 @@ def test_a_run_may_produce_nothing(experiment):
 
 def test_a_redundant_result_is_stored_compressed(experiment):
     shard = plan_experiment(experiment)[0]
-    arrays = {"reward": np.ones(100_000, dtype=np.float32)}
+    values = np.ones(100_000, dtype=np.float32)
+    arrays = {"reward": (np.arange(values.size), values)}
     with ResultWriter(experiment, "0") as writer:
         writer.save(shard, [arrays for _ in shard.runs])
     stored = _query_ro(
@@ -152,9 +153,10 @@ def test_a_redundant_result_is_stored_compressed(experiment):
         "SELECT value FROM metrics WHERE run_id = ?",
         (shard.runs[0].id,),
     )[0][0]
-    assert len(stored) < arrays["reward"].nbytes / 10, (
-        f"{len(stored)} bytes stored for {arrays['reward'].nbytes} bytes of array"
+    assert len(stored) < values.nbytes / 10, (
+        f"{len(stored)} bytes stored for {values.nbytes} bytes of array"
     )
+
 
 
 # --- merging ----------------------------------------------------------------
@@ -391,8 +393,9 @@ def test_a_metric_loads_one_array_per_run_in_the_order_asked(experiment):
 def test_a_metric_keeps_its_dtype_and_shape(experiment):
     shard = plan_experiment(experiment)[0]
     padded = np.arange(6, dtype=np.int32).reshape(2, 3)
+    lengths = {"lengths": (np.arange(2), padded)}
     with ResultWriter(experiment, "0") as writer:
-        writer.save(shard, [{"lengths": padded} for _ in shard.runs])
+        writer.save(shard, [lengths for _ in shard.runs])
 
     [loaded] = load_metric(experiment, shard.component, "lengths", [shard.runs[0].id])
 
