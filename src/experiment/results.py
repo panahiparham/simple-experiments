@@ -108,8 +108,10 @@ def _part_path(experiment: Experiment, component: str, part: str) -> Path:
 
 
 def _part_paths(experiment: Experiment, component: str) -> list[Path]:
-    """Every per-worker part of a component currently on disk, in a stable order."""
-    return sorted((_parts_dir(experiment) / component).glob("part-*.db"))
+    """Every per-worker part of a component currently on disk, in a stable order,
+    each at the current schema.
+    """
+    return _upgraded(sorted((_parts_dir(experiment) / component).glob("part-*.db")))
 
 
 def _databases_in(root: Path, experiment: Experiment, component: str) -> list[Path]:
