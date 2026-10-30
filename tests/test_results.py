@@ -255,6 +255,18 @@ def test_loading_from_a_schema_1_database_migrates_it(experiment, where):
     assert values.tolist() == [1.0, 2.0]
 
 
+def test_a_schema_1_part_merges_once_migrated(experiment):
+    """A part left by a sweep interrupted under 0.1.0 merges like any other."""
+    metrics = {
+        "episode_length": np.array([3, 2], dtype=np.int32),
+        "undiscounted_return": np.array([1.0, 2.0], dtype=np.float32),
+    }
+    create_schema_1_database(_part_path(experiment, "a", "0"), metrics)
+    assert merge_parts(experiment) == 1
+    [(steps, _)] = load_metric(experiment, "a", "undiscounted_return", ["old"])
+    assert steps.tolist() == [3, 5]
+
+
 def test_a_database_with_another_metric_is_left_untouched(experiment):
     """A metric 0.1.0's users never stored has no known steps, so the database
     is refused whole rather than partly migrated.
