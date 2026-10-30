@@ -203,6 +203,19 @@ def test_episode_metrics_are_stepped_at_the_end_of_each_episode(
     assert migrated.tolist() == values
 
 
+def test_migrated_episode_metrics_are_float32(experiment):
+    """Migrated lengths are float32 like returns, as rl-jax records every metric."""
+    metrics = {
+        "episode_length": np.array([3, 2], dtype=np.int32),
+        "undiscounted_return": np.array([1.0, 2.0], dtype=np.float32),
+    }
+    create_schema_1_database(database_path(experiment, "a"), metrics)
+    merge_a_sweep(experiment)
+    for name in metrics:
+        [(_, values)] = load_metric(experiment, "a", name, ["old"])
+        assert values.dtype == np.float32
+
+
 # --- writing ----------------------------------------------------------------
 
 
