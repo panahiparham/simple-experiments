@@ -523,6 +523,9 @@ def load_metric(
 ) -> list[tuple[np.ndarray, np.ndarray] | None]:
     """Load one metric of several runs.
 
+    Each run's metric comes from the stored copy its completion is judged by,
+    so every metric loaded for a run comes from one execution.
+
     Args:
         experiment: The experiment to read.
         component: The component the runs belong to.
@@ -536,22 +539,23 @@ def load_metric(
     Raises:
         KeyError: If the component has no stored run with one of the ids.
     """
-    placeholders = ", ".join("?" for _ in run_ids)
-    runs_query = f"SELECT run_id FROM runs WHERE run_id IN ({placeholders})"
-    metric_query = (
-        "SELECT run_id, steps, value FROM metrics "
-        f"WHERE name = ? AND run_id IN ({placeholders})"
-    )
-    known: set[str] = set()
-    blobs: dict[str, tuple[bytes, bytes]] = {}
-    for path in _database_paths(experiment, component):
-        known.update(run for (run,) in _query_ro(path, runs_query, tuple(run_ids)))
-        for run, steps, values in _query_ro(path, metric_query, (name, *run_ids)):
-            blobs.setdefault(run, (steps, values))
-
-    missing = [run for run in run_ids if run not in known]
+    copies = _run_copies(experiment, component)
+    missing = [run for run in run_ids if run not in copies]
     if missing:
         raise KeyError(f"{component!r} has no stored run(s) {missing}")
+
+    by_path: dict[Path, list[str]] = {}
+    for run in run_ids:
+        by_path.setdefault(copies[run].path, []).append(run)
+    blobs: dict[str, tuple[bytes, bytes]] = {}
+    for path, runs in by_path.items():
+        placeholders = ", ".join("?" for _ in runs)
+        query = (
+            "SELECT run_id, steps, value FROM metrics "
+            f"WHERE name = ? AND run_id IN ({placeholders})"
+        )
+        for run, steps, values in _query_ro(path, query, (name, *runs)):
+            blobs[run] = (steps, values)
     return [
         _pair_from_blobs(*blobs[run]) if run in blobs else None
         for run in run_ids
