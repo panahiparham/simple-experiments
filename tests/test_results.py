@@ -16,6 +16,7 @@ from experiment.design import Component, Experiment
 from experiment.hypers import traced
 from experiment.plan import Shard, plan_experiment
 from experiment.results import (
+    _SCHEMA_VERSION,
     ResultWriter,
     _part_path,
     _parts_dir,
@@ -85,6 +86,16 @@ def test_each_component_is_merged_into_its_own_database(experiment):
     merge_parts(experiment)
     stored = sorted(p.name for p in experiment.results_dir.glob("*.db"))
     assert stored == ["a.db", "b.db"]
+
+
+def test_new_databases_record_the_schema_version(experiment):
+    """A worker's part and the merged database both carry the current version."""
+    run_everything(experiment)
+    part = _part_path(experiment, "a", "0")
+    assert _query_ro(part, "PRAGMA user_version") == [(_SCHEMA_VERSION,)]
+    merge_parts(experiment)
+    merged = database_path(experiment, "a")
+    assert _query_ro(merged, "PRAGMA user_version") == [(_SCHEMA_VERSION,)]
 
 
 # --- writing ----------------------------------------------------------------
