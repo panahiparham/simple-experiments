@@ -305,7 +305,8 @@ def merge_parts(experiment: Experiment) -> int:
     """Merge a sweep's per-worker parts into each component's database.
 
     Idempotent, and meant to run in a single process once a sweep's workers
-    have finished. Parts are deleted only after they have been merged cleanly,
+    have finished. A run in a part replaces every metric the merged database
+    stored for it. Parts are deleted only after they have been merged cleanly,
     so a failure part-way leaves the results where they are rather than losing
     them.
 
@@ -342,7 +343,10 @@ def _merge_component(experiment: Experiment, component: str) -> int:
                 f"INSERT OR IGNORE INTO runs ({_COLUMNS}) "
                 f"SELECT {_COLUMNS} FROM part.runs"
             ).rowcount
-            conn.execute("INSERT OR IGNORE INTO metrics SELECT * FROM part.metrics")
+            conn.execute(
+                "DELETE FROM metrics WHERE run_id IN (SELECT run_id FROM part.runs)"
+            )
+            conn.execute("INSERT INTO metrics SELECT * FROM part.metrics")
             conn.commit()
             conn.execute("DETACH DATABASE part")
     finally:
