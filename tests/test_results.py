@@ -414,6 +414,23 @@ def test_a_metric_loads_one_series_per_run_in_the_order_asked(experiment):
     ]
 
 
+def test_a_metric_loads_with_its_steps_as_int64(experiment):
+    """Steps come back as stored, widened to int64 whatever integer type the
+    shard function used.
+    """
+    shard = plan_experiment(experiment)[0]
+    steps = np.array([5, 9, 20], dtype=np.int32)
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [{"loss": (steps, np.zeros(3))} for _ in shard.runs])
+
+    [loaded] = load_metric(experiment, shard.component, "loss", [shard.runs[0].id])
+
+    assert loaded is not None
+    loaded_steps, _ = loaded
+    assert loaded_steps.dtype == np.int64
+    assert loaded_steps.tolist() == [5, 9, 20]
+
+
 def test_a_metric_keeps_its_dtype_and_shape(experiment):
     shard = plan_experiment(experiment)[0]
     padded = np.arange(6, dtype=np.int32).reshape(2, 3)
