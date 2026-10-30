@@ -179,6 +179,18 @@ loads one metric of the runs asked for, in their order, as a
 `(steps, values)` pair with
 int64 steps, and `None` for a run that did not produce it. It raises `KeyError` for a run id that is not stored.
 
+### Upgrade results from 0.1.0
+
+Each results database records its schema version. Any database that
+simple-experiments 0.1.0 stored, including a mirror or an unmerged part, is
+upgraded in place the first time it is read or written. Its per-episode
+`undiscounted_return` and `episode_length` become `interaction.return` and
+`interaction.episode_length`, as float32 values each stepped at the run step
+its episode ended. For a run with several envs, that step counts the steps of
+every env. A database storing any other metric raises an error and is left as
+it is. A database from a newer simple-experiments raises an error until you
+upgrade.
+
 ## Setting up on a cluster
 
 `experiment.slurm` reads a `cluster.toml` from your project's repo root,

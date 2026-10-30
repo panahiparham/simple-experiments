@@ -55,13 +55,15 @@ __all__ = [
 ]
 
 
-_SCHEMA = """
+_RUNS_TABLE = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id     TEXT PRIMARY KEY,
     config_id  TEXT NOT NULL,
     seed       INTEGER NOT NULL,
     config     TEXT NOT NULL
 );
+"""
+_METRICS_TABLE = """
 CREATE TABLE IF NOT EXISTS metrics (
     run_id     TEXT NOT NULL,
     name       TEXT NOT NULL,
@@ -70,6 +72,14 @@ CREATE TABLE IF NOT EXISTS metrics (
     PRIMARY KEY (run_id, name)
 );
 """
+_SCHEMA_VERSION = 2
+# The only metrics simple-experiments 0.1.0 stored for its users, rl-jax and
+# gen-gen: one return and one length per episode, renamed as rl-jax's metric
+# recording names them.
+_EPISODE_METRICS = {
+    "episode_length": "interaction.episode_length",
+    "undiscounted_return": "interaction.return",
+}
 _COLUMNS = "run_id, config_id, seed, config"
 
 # Each machine keeps a read-only copy of the other's results: the cluster's
@@ -102,17 +112,29 @@ def _part_path(experiment: Experiment, component: str, part: str) -> Path:
 
 
 def _part_paths(experiment: Experiment, component: str) -> list[Path]:
-    """Every per-worker part of a component currently on disk, in a stable order."""
-    return sorted((_parts_dir(experiment) / component).glob("part-*.db"))
+    """Every per-worker part of a component currently on disk, in a stable order,
+    each at the current schema.
+    """
+    return _upgraded(sorted((_parts_dir(experiment) / component).glob("part-*.db")))
 
 
 def _databases_in(root: Path, experiment: Experiment, component: str) -> list[Path]:
     """A component's parts under ``root``, then its merged database there.
 
-    Parts come first because they hold runs newer than the merge.
+    Parts come first because they hold runs newer than the merge. Each is
+    first brought to the current schema, a mirror too: the next sync replaces
+    it with the other machine's copy, which is upgraded again when read.
     """
     parts = root / f"{experiment.name}.parts" / component
-    return sorted(parts.glob("part-*.db")) + sorted(root.glob(f"{component}.db"))
+    paths = sorted(parts.glob("part-*.db")) + sorted(root.glob(f"{component}.db"))
+    return _upgraded(paths)
+
+
+def _upgraded(paths: list[Path]) -> list[Path]:
+    """``paths``, after bringing each database to the current schema."""
+    for path in paths:
+        _connect_write(path).close()
+    return paths
 
 
 def _mirrored_paths(experiment: Experiment, component: str) -> list[Path]:
@@ -143,12 +165,100 @@ def _connect_write(path: str | Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=60.0)
     conn.execute("PRAGMA busy_timeout=60000")
+    if _schema_version(conn) == 1:
+        _migrate_schema_1(conn, path)
+    _require_current_schema(conn, path)
     return conn
 
 
+def _require_current_schema(conn: sqlite3.Connection, path: Path) -> None:
+    """Refuse a database whose schema this version cannot read."""
+    version = _schema_version(conn)
+    if version not in (None, _SCHEMA_VERSION):
+        raise RuntimeError(
+            f"{path} holds results in schema {version}, but this version of "
+            f"simple-experiments reads schema {_SCHEMA_VERSION}"
+        )
+
+
+def _schema_version(conn: sqlite3.Connection) -> int | None:
+    """A database's schema version, or ``None`` while it has no tables.
+
+    Tables without a stamp predate versioning, which makes them schema 1.
+    """
+    if conn.execute("SELECT 1 FROM sqlite_master").fetchone() is None:
+        return None
+    return conn.execute("PRAGMA user_version").fetchone()[0] or 1
+
+
+def _migrate_schema_1(conn: sqlite3.Connection, path: Path) -> None:
+    """Pair each episode metric of a 0.1.0 database with its steps.
+
+    The database is left untouched unless every run migrates. Its version is
+    read again under the write lock, since another process may have migrated
+    it after this one opened it.
+    """
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if _schema_version(conn) != 1:
+            return
+        stored: dict[str, dict[str, np.ndarray]] = {}
+        query = "SELECT run_id, name, value FROM metrics"
+        for run, name, blob in conn.execute(query):
+            stored.setdefault(run, {})[name] = _from_blob(blob)
+
+        rows = []
+        for run, metrics in stored.items():
+            if set(metrics) != set(_EPISODE_METRICS):
+                raise RuntimeError(
+                    f"{path} cannot be migrated: run {run} stores "
+                    f"{sorted(metrics)}, but only {sorted(_EPISODE_METRICS)} "
+                    "migrate from schema 1"
+                )
+            for name, series in _episode_series(metrics).items():
+                new_name = _EPISODE_METRICS[name]
+                rows.append((run, new_name, *_series_blobs(new_name, series)))
+
+        conn.execute("DROP TABLE metrics")
+        conn.execute(_METRICS_TABLE)
+        conn.executemany(
+            "INSERT INTO metrics (run_id, name, steps, value) VALUES (?, ?, ?, ?)",
+            rows,
+        )
+        conn.execute("PRAGMA user_version = 2")
+
+
+def _episode_series(
+    metrics: dict[str, np.ndarray],
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Each episode metric as one float32 series, as rl-jax now records every
+    metric, stepped at the step its episode ended.
+
+    A metric holds one row of episodes per env, padded with zero-length
+    episodes, or a single row with no env axis. Every env steps once per env
+    step of the run, so an episode ending at its env's step ``t`` ends at step
+    ``t * n_envs`` of the run.
+    """
+    lengths = np.atleast_2d(metrics["episode_length"])
+    ended = lengths > 0
+    env_steps = (np.cumsum(lengths, axis=1) * len(lengths))[ended]
+    order = np.argsort(env_steps, kind="stable")
+    return {
+        name: (
+            env_steps[order],
+            np.atleast_2d(values)[ended][order].astype(np.float32),
+        )
+        for name, values in metrics.items()
+    }
+
+
 def _ensure_table(conn: sqlite3.Connection) -> None:
-    """Create the runs and metrics tables if they are not there yet."""
-    conn.executescript(_SCHEMA)
+    """Create the tables of a new database, stamped with the schema version."""
+    if _schema_version(conn) is None:
+        conn.executescript(
+            f"BEGIN; {_RUNS_TABLE} {_METRICS_TABLE} "
+            f"PRAGMA user_version = {_SCHEMA_VERSION}; COMMIT;"
+        )
 
 
 def _query_ro(path: str | Path, sql: str, params: tuple = ()) -> list[tuple]:
@@ -157,7 +267,8 @@ def _query_ro(path: str | Path, sql: str, params: tuple = ()) -> list[tuple]:
     Returns ``[]`` if the database cannot be read cleanly - it may not exist
     yet, may lack the table, or may be a peer worker's part mid-write. A worker
     never needs a peer's rows, since the plan already gave them disjoint work,
-    so a tolerated miss costs at most a recompute and never a wrong skip.
+    so a tolerated miss costs at most a recompute and never a wrong skip. A
+    database on another schema is refused, never read as empty.
     """
     try:
         conn = sqlite3.connect(f"file:{Path(path)}?mode=ro", uri=True, timeout=5.0)
@@ -165,6 +276,7 @@ def _query_ro(path: str | Path, sql: str, params: tuple = ()) -> list[tuple]:
         return []
     try:
         conn.execute("PRAGMA busy_timeout=5000")
+        _require_current_schema(conn, Path(path))
         return conn.execute(sql, params).fetchall()
     except sqlite3.OperationalError:
         return []
