@@ -8,7 +8,7 @@ sides meet.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from experiment.design import Experiment
@@ -18,9 +18,12 @@ from experiment.results import ResultWriter
 __all__ = ["ShardFn", "run_shards"]
 
 
-# process(configs, seeds) -> one result mapping per run, in the order given.
-# Everything the harness knows about how a run is computed is on this line.
-ShardFn = Callable[[Sequence[Any], Sequence[int]], Sequence[dict]]
+# process(configs, seeds, record) -> one result mapping per run, in the order
+# given. ``record`` is the shard's component's recording spec. Everything the
+# harness knows about how a run is computed is on this line.
+ShardFn = Callable[
+    [Sequence[Any], Sequence[int], Mapping[str, object]], Sequence[dict]
+]
 
 
 def run_shards(
@@ -50,6 +53,7 @@ def run_shards(
     saved = 0
     with ResultWriter(experiment, part) as writer:
         for shard in shards:
-            results = process(shard.configs, shard.seeds)
+            record = experiment.component(shard.component).record
+            results = process(shard.configs, shard.seeds, record)
             saved += writer.save(shard, list(results))
     return saved

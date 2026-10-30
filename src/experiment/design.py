@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -74,6 +74,9 @@ class Component:
         shard_size: How many runs to pack into a shard, or ``None`` for as many
             as can be batched together.
         parallel_shards: How many shards a worker runs at once.
+        record: Maps each metric the runs must store to how the project should
+            record it. The harness reads only the names, and the mapping is not
+            part of a run's identity, so changing it never changes a run id.
     """
 
     name: str
@@ -82,11 +85,21 @@ class Component:
     seeds: Sequence[int] = ()
     shard_size: int | None = None
     parallel_shards: int = 1
+    record: Mapping[str, object] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _require_identifier(self.name, "component")
         object.__setattr__(self, "seeds", tuple(int(s) for s in self.seeds))
         object.__setattr__(self, "sweep", dict(self.sweep))
+        object.__setattr__(self, "record", dict(self.record))
+        invalid = sorted(
+            repr(name) for name in self.record if not isinstance(name, str) or not name
+        )
+        if invalid:
+            raise ValueError(
+                f"component {self.name!r} records metric name(s) {invalid}; "
+                "each must be a non-empty string"
+            )
         if self.shard_size is not None and self.shard_size < 1:
             raise ValueError(
                 f"component {self.name!r} has shard_size={self.shard_size}; "

@@ -14,7 +14,7 @@ import pytest
 
 from experiment.design import Component, Experiment
 from experiment.hypers import traced
-from experiment.plan import plan_experiment
+from experiment.plan import Shard, plan_experiment
 from experiment.results import (
     ResultWriter,
     _part_path,
@@ -55,7 +55,7 @@ def experiment(tmp_path) -> Experiment:
 
 
 def result(seed: int) -> dict:
-    return {"reward": np.arange(4.0) + seed}
+    return {"reward": (np.arange(1, 5), np.arange(4.0) + seed)}
 
 
 def run_everything(experiment: Experiment, num_workers: int = 1) -> None:
@@ -117,11 +117,55 @@ def test_a_finished_experiment_plans_no_more_work(experiment):
 
 
 def test_saving_a_run_twice_stores_it_once(experiment):
-    plan = plan_experiment(experiment)
+    """Saving a shard again keeps one row per run."""
+    shard = plan_experiment(experiment)[0]
     with ResultWriter(experiment, "0") as writer:
-        first = writer.save(plan[0], [result(r.seed) for r in plan[0].runs])
-        again = writer.save(plan[0], [result(r.seed) for r in plan[0].runs])
-    assert (first, again) == (len(plan[0].runs), 0)
+        for _ in range(2):
+            writer.save(shard, [result(r.seed) for r in shard.runs])
+    merge_parts(experiment)
+    assert load_runs(experiment, shard.component).height == len(shard.runs)
+
+
+def stored_values(experiment: Experiment, shard: Shard, *names: str) -> dict:
+    """Each named metric's values for the shard's first run, or None."""
+    return {
+        name: None if pair is None else pair[1].tolist()
+        for name in names
+        for pair in load_metric(experiment, shard.component, name, [shard.runs[0].id])
+    }
+
+
+def test_saving_a_run_again_replaces_every_metric_it_stored(experiment):
+    """A rerun's result replaces the stored one whole: changed values are
+    overwritten and a metric the rerun did not return is gone.
+    """
+    shard = plan_experiment(experiment)[0]
+    old = {"reward": (np.arange(2), np.zeros(2)), "loss": (np.arange(1), np.ones(1))}
+    new = {"reward": (np.arange(2), np.ones(2))}
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [old])
+        writer.save(shard, [new])
+    merge_parts(experiment)
+
+    stored = stored_values(experiment, shard, "reward", "loss")
+    assert stored == {"reward": [1.0, 1.0], "loss": None}
+
+
+def test_merging_a_rerun_replaces_every_metric_of_the_merged_run(experiment):
+    """A run rerun by a later sweep keeps only the rerun's metrics once its
+    part is merged into a database already holding the run.
+    """
+    shard = plan_experiment(experiment)[0]
+    old = {"reward": (np.arange(2), np.zeros(2)), "loss": (np.arange(1), np.ones(1))}
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [old])
+    merge_parts(experiment)
+    with ResultWriter(experiment, "1") as writer:
+        writer.save(shard, [{"reward": (np.arange(2), np.ones(2))}])
+    merge_parts(experiment)
+
+    stored = stored_values(experiment, shard, "reward", "loss")
+    assert stored == {"reward": [1.0, 1.0], "loss": None}
 
 
 def test_a_result_per_run_is_required(experiment):
@@ -144,7 +188,8 @@ def test_a_run_may_produce_nothing(experiment):
 
 def test_a_redundant_result_is_stored_compressed(experiment):
     shard = plan_experiment(experiment)[0]
-    arrays = {"reward": np.ones(100_000, dtype=np.float32)}
+    values = np.ones(100_000, dtype=np.float32)
+    arrays = {"reward": (np.arange(values.size), values)}
     with ResultWriter(experiment, "0") as writer:
         writer.save(shard, [arrays for _ in shard.runs])
     stored = _query_ro(
@@ -152,9 +197,34 @@ def test_a_redundant_result_is_stored_compressed(experiment):
         "SELECT value FROM metrics WHERE run_id = ?",
         (shard.runs[0].id,),
     )[0][0]
-    assert len(stored) < arrays["reward"].nbytes / 10, (
-        f"{len(stored)} bytes stored for {arrays['reward'].nbytes} bytes of array"
+    assert len(stored) < values.nbytes / 10, (
+        f"{len(stored)} bytes stored for {values.nbytes} bytes of array"
     )
+
+
+@pytest.mark.parametrize(
+    "series",
+    [
+        (np.arange(3), np.zeros(4)),
+        (np.arange(3.0), np.zeros(3)),
+        (np.arange(6).reshape(2, 3), np.zeros(2)),
+        (np.arange(1), np.float64(0.0)),
+    ],
+    ids=["count mismatch", "float steps", "2-d steps", "scalar values"],
+)
+def test_steps_must_pair_up_with_values(experiment, series):
+    """A metric whose steps do not give one integer step per value is refused,
+    and nothing of the shard is stored.
+    """
+    shard = plan_experiment(experiment)[0]
+
+    with (
+        ResultWriter(experiment, "0") as writer,
+        pytest.raises(ValueError, match="reward"),
+    ):
+        writer.save(shard, [{"reward": series} for _ in shard.runs])
+
+    assert completed(experiment)[shard.component] == set()
 
 
 # --- merging ----------------------------------------------------------------
@@ -196,6 +266,69 @@ def test_results_survive_a_merge(experiment):
     before = load_runs(experiment, "a").height
     merge_parts(experiment)
     assert load_runs(experiment, "a").height == before == 3
+
+
+# --- finishing runs ---------------------------------------------------------
+
+
+def recording(experiment: Experiment, *names: str) -> Experiment:
+    """The same experiment with component ``a`` asking for ``names``."""
+    a, b = experiment.components
+    recorded = dataclasses.replace(a, record=dict.fromkeys(names))
+    return dataclasses.replace(experiment, components=[recorded, b])
+
+
+def test_a_run_lacking_a_recorded_metric_is_not_finished(experiment):
+    """Asking for a metric the stored runs never produced makes them
+    outstanding again, while components that ask for nothing new stay done.
+    """
+    run_everything(experiment)
+
+    done = completed(recording(experiment, "reward", "loss"))
+
+    assert {name: len(runs) for name, runs in done.items()} == {"a": 0, "b": 2}
+
+
+def test_a_run_storing_every_recorded_metric_is_finished(experiment):
+    """Runs that already store everything asked for are not computed again."""
+    run_everything(experiment)
+
+    asked = recording(experiment, "reward")
+
+    assert plan_experiment(asked, done=completed(asked)) == []
+
+
+def test_metrics_of_two_stored_copies_never_finish_a_run_together(experiment):
+    """A merged copy with one recorded metric and an unmerged copy with the
+    other come from different executions, so the run is not finished.
+    """
+    shard = plan_experiment(experiment)[0]
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [result(r.seed) for r in shard.runs])
+    merge_parts(experiment)
+    with ResultWriter(experiment, "1") as writer:
+        writer.save(shard, [{"loss": (np.arange(1), np.ones(1))}])
+
+    done = completed(recording(experiment, "reward", "loss"))
+
+    assert done[shard.component] == set()
+
+
+def test_one_complete_copy_finishes_a_run_beside_a_partial_one(experiment):
+    """A run stays finished when a newer, unmerged copy of it lacks a recorded
+    metric that the merged copy holds.
+    """
+    shard = plan_experiment(experiment)[0]
+    full = {"reward": (np.arange(2), np.zeros(2)), "loss": (np.arange(1), np.ones(1))}
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [full])
+    merge_parts(experiment)
+    with ResultWriter(experiment, "1") as writer:
+        writer.save(shard, [{"reward": (np.arange(2), np.ones(2))}])
+
+    done = completed(recording(experiment, "reward", "loss"))
+
+    assert done[shard.component] == {shard.runs[0].id}
 
 
 # --- deleting -----------------------------------------------------------------
@@ -376,29 +509,48 @@ def run_ids_by_seed(experiment: Experiment, component: str) -> list[str]:
     return load_runs(experiment, component).sort("seed")["run_id"].to_list()
 
 
-def test_a_metric_loads_one_array_per_run_in_the_order_asked(experiment):
+def test_a_metric_loads_one_series_per_run_in_the_order_asked(experiment):
     run_everything(experiment)
     merge_parts(experiment)
     run_ids = run_ids_by_seed(experiment, "a")[::-1]
 
     loaded = load_metric(experiment, "a", "reward", run_ids)
 
-    assert [array.tolist() for array in loaded] == [
+    assert [values.tolist() for _, values in loaded] == [
         [2.0, 3.0, 4.0, 5.0], [1.0, 2.0, 3.0, 4.0], [0.0, 1.0, 2.0, 3.0]
     ]
+
+
+def test_a_metric_loads_with_its_steps_as_int64(experiment):
+    """Steps come back as stored, widened to int64 whatever integer type the
+    shard function used.
+    """
+    shard = plan_experiment(experiment)[0]
+    steps = np.array([5, 9, 20], dtype=np.int32)
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [{"loss": (steps, np.zeros(3))} for _ in shard.runs])
+
+    [loaded] = load_metric(experiment, shard.component, "loss", [shard.runs[0].id])
+
+    assert loaded is not None
+    loaded_steps, _ = loaded
+    assert loaded_steps.dtype == np.int64
+    assert loaded_steps.tolist() == [5, 9, 20]
 
 
 def test_a_metric_keeps_its_dtype_and_shape(experiment):
     shard = plan_experiment(experiment)[0]
     padded = np.arange(6, dtype=np.int32).reshape(2, 3)
+    lengths = {"lengths": (np.arange(2), padded)}
     with ResultWriter(experiment, "0") as writer:
-        writer.save(shard, [{"lengths": padded} for _ in shard.runs])
+        writer.save(shard, [lengths for _ in shard.runs])
 
     [loaded] = load_metric(experiment, shard.component, "lengths", [shard.runs[0].id])
 
     assert loaded is not None
-    assert loaded.dtype == np.int32
-    assert np.array_equal(loaded, padded)
+    _, values = loaded
+    assert values.dtype == np.int32
+    assert np.array_equal(values, padded)
 
 
 def test_a_run_without_the_metric_loads_as_none(experiment):
@@ -437,4 +589,37 @@ def test_a_metric_loads_across_parts_and_mirrors(experiment):
 
     loaded = load_metric(experiment, "a", "reward", run_ids)
 
-    assert [array[0] for array in loaded] == [0.0, 1.0, 2.0]
+    assert [values[0] for _, values in loaded] == [0.0, 1.0, 2.0]
+
+
+def test_a_metric_loads_from_the_copy_that_finished_the_run(experiment):
+    """With a complete merged copy and a newer partial one, every metric of
+    the run loads from the complete copy.
+    """
+    shard = plan_experiment(experiment)[0]
+    full = {"reward": (np.arange(2), np.zeros(2)), "loss": (np.arange(1), np.ones(1))}
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [full])
+    merge_parts(experiment)
+    with ResultWriter(experiment, "1") as writer:
+        writer.save(shard, [{"reward": (np.arange(2), np.ones(2))}])
+
+    stored = stored_values(recording(experiment, "reward", "loss"), shard, "reward")
+
+    assert stored == {"reward": [0.0, 0.0]}
+
+
+def test_a_metric_loads_from_the_newest_copy_when_none_finished(experiment):
+    """When no copy holds every recorded metric, the run loads from the
+    newest one: an unmerged part before the merged database.
+    """
+    shard = plan_experiment(experiment)[0]
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [{"reward": (np.arange(2), np.zeros(2))}])
+    merge_parts(experiment)
+    with ResultWriter(experiment, "1") as writer:
+        writer.save(shard, [{"reward": (np.arange(2), np.ones(2))}])
+
+    stored = stored_values(recording(experiment, "loss"), shard, "reward")
+
+    assert stored == {"reward": [1.0, 1.0]}

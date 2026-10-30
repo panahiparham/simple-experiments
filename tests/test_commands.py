@@ -23,7 +23,12 @@ import experiment as experiment_package
 from experiment.commands import _split_cluster_flags, parse_overrides, run
 from experiment.design import Component, Experiment, SlurmResources
 from experiment.plan import Phase, Shard
-from experiment.results import completed, load_metric, load_runs
+from experiment.results import (
+    completed,
+    load_metric,
+    load_runs,
+    stored_runs,
+)
 
 PACKAGE_ROOT = Path(experiment_package.__file__).resolve().parents[1]
 
@@ -34,22 +39,22 @@ class Cfg:
     NAME: str = "dqn"
 
 
-def process(configs, seeds):
-    return [{"reward": np.arange(2.0) + seed} for seed in seeds]
+def process(configs, seeds, record):
+    return [{"reward": (np.arange(2), np.arange(2.0) + seed)} for seed in seeds]
 
 
-def refuse(configs, seeds):
+def refuse(configs, seeds, record):
     raise AssertionError("nothing should have been computed")
 
 
-def recompute(configs, seeds):
-    return [{"reward": np.full(2, -1.0)} for _ in seeds]
+def recompute(configs, seeds, record):
+    return [{"reward": (np.arange(2), np.full(2, -1.0))} for _ in seeds]
 
 
 def rewards(experiment, component):
     run_ids = load_runs(experiment, component).sort("seed")["run_id"].to_list()
     loaded = load_metric(experiment, component, "reward", run_ids)
-    return [array.tolist() for array in loaded]
+    return [values.tolist() for _, values in loaded]
 
 
 @pytest.fixture
@@ -492,6 +497,21 @@ def test_delete_without_seed_or_run_id_removes_the_whole_component(experiment):
     assert len(completed(experiment)["b"]) == 2
 
 
+def test_deleting_a_component_reaches_runs_lacking_a_recorded_metric(experiment):
+    """A run stored before its component asked for a new metric is unfinished,
+    but deleting the component still removes it.
+    """
+    run(experiment, process, ["sweep"])
+    a, b = experiment.components
+    asking = dataclasses.replace(
+        experiment, components=[dataclasses.replace(a, record={"loss": None}), b]
+    )
+
+    run(asking, refuse, ["delete", "--component", "a", "--yes"])
+
+    assert stored_runs(asking)["a"] == set()
+
+
 def test_delete_needs_a_component(experiment):
     with pytest.raises(SystemExit, match="needs --component"):
         run(experiment, refuse, ["delete"])
@@ -520,8 +540,8 @@ class Cfg:
     LR: float = 1e-3
 
 
-def process(configs, seeds):
-    return [{"reward": np.arange(2.0) + s} for s in seeds]
+def process(configs, seeds, record):
+    return [{"reward": (np.arange(2), np.arange(2.0) + s)} for s in seeds]
 
 
 EXPERIMENT = Experiment(
@@ -614,7 +634,7 @@ class Cfg:
     LR: float = 1e-3
 
 
-def process(configs, seeds):
+def process(configs, seeds, record):
     # Every shard waits until a second one has started, which only happens when
     # shards run at the same time.
     started = RESULTS / "started"
@@ -627,7 +647,7 @@ def process(configs, seeds):
         if time.monotonic() > deadline:
             raise TimeoutError("no other shard started")
         time.sleep(0.01)
-    return [{"reward": np.arange(2.0) + s} for s in seeds]
+    return [{"reward": (np.arange(2), np.arange(2.0) + s)} for s in seeds]
 
 
 EXPERIMENT = Experiment(
