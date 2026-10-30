@@ -33,7 +33,7 @@ import sqlite3
 import zlib
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Self
+from typing import NamedTuple, Self
 
 import numpy as np
 import polars as pl
@@ -205,9 +205,11 @@ def _pair_from_blobs(steps: bytes, values: bytes) -> tuple[np.ndarray, np.ndarra
 def completed(experiment: Experiment) -> dict[str, set[str]]:
     """List the runs an experiment has finished, per component.
 
-    The result is what a plan filters against, so it unions the merged database
-    with every part still on disk: a run counts as done whether or not the sweep
-    that produced it got as far as merging.
+    A run is finished once one stored copy of it holds every metric its
+    component's recording spec names. The result is what a plan filters
+    against, so it looks in the merged database and every part still on disk: a
+    run counts as done whether or not the sweep that produced it got as far as
+    merging.
 
     Args:
         experiment: The experiment to look up.
@@ -216,7 +218,40 @@ def completed(experiment: Experiment) -> dict[str, set[str]]:
         A ``{component name: {run id}}`` mapping, with an entry for every
         component the experiment declares even when it has no results yet.
     """
-    return stored_runs(experiment)
+    return {
+        component.name: {
+            run
+            for run, copy in _run_copies(experiment, component.name).items()
+            if copy.finished
+        }
+        for component in experiment.components
+    }
+
+
+class _Copy(NamedTuple):
+    path: Path
+    finished: bool
+
+
+def _run_copies(experiment: Experiment, component: str) -> dict[str, _Copy]:
+    """The one stored copy each run's metrics are read from.
+
+    A run is stored more than once when it was rerun or computed on both
+    machines. Its copy is the first database, newest first, that holds every
+    metric the recording spec names, or failing that the first that holds the
+    run, so a run's metrics never mix two executions.
+    """
+    names = set(experiment.component(component).record)
+    copies: dict[str, _Copy] = {}
+    for path in _database_paths(experiment, component):
+        stored: dict[str, set[str]] = {}
+        for run, name in _query_ro(path, "SELECT run_id, name FROM metrics"):
+            stored.setdefault(run, set()).add(name)
+        for (run,) in _query_ro(path, "SELECT run_id FROM runs"):
+            finished = stored.get(run, set()) >= names
+            if run not in copies or (finished and not copies[run].finished):
+                copies[run] = _Copy(path, finished)
+    return copies
 
 
 def stored_runs(experiment: Experiment) -> dict[str, set[str]]:
