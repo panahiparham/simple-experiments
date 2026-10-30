@@ -144,7 +144,24 @@ def _connect_write(path: str | Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=60.0)
     conn.execute("PRAGMA busy_timeout=60000")
+    _require_current_schema(conn, path)
     return conn
+
+
+def _require_current_schema(conn: sqlite3.Connection, path: Path) -> None:
+    """Refuse a database whose schema this version cannot read.
+
+    A database without tables is new and has no schema yet. One with tables
+    but no stamp predates versioning, which makes it schema 1.
+    """
+    if conn.execute("SELECT 1 FROM sqlite_master").fetchone() is None:
+        return
+    version = conn.execute("PRAGMA user_version").fetchone()[0] or 1
+    if version != _SCHEMA_VERSION:
+        raise RuntimeError(
+            f"{path} holds results in schema {version}, but this version of "
+            f"simple-experiments reads schema {_SCHEMA_VERSION}"
+        )
 
 
 def _ensure_table(conn: sqlite3.Connection) -> None:
@@ -161,7 +178,8 @@ def _query_ro(path: str | Path, sql: str, params: tuple = ()) -> list[tuple]:
     Returns ``[]`` if the database cannot be read cleanly - it may not exist
     yet, may lack the table, or may be a peer worker's part mid-write. A worker
     never needs a peer's rows, since the plan already gave them disjoint work,
-    so a tolerated miss costs at most a recompute and never a wrong skip.
+    so a tolerated miss costs at most a recompute and never a wrong skip. A
+    database on another schema is refused, never read as empty.
     """
     try:
         conn = sqlite3.connect(f"file:{Path(path)}?mode=ro", uri=True, timeout=5.0)
@@ -169,6 +187,7 @@ def _query_ro(path: str | Path, sql: str, params: tuple = ()) -> list[tuple]:
         return []
     try:
         conn.execute("PRAGMA busy_timeout=5000")
+        _require_current_schema(conn, Path(path))
         return conn.execute(sql, params).fetchall()
     except sqlite3.OperationalError:
         return []
