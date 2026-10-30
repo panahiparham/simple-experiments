@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS metrics (
     PRIMARY KEY (run_id, name)
 );
 """
+_SCHEMA_VERSION = 2
 _COLUMNS = "run_id, config_id, seed, config"
 
 # Each machine keeps a read-only copy of the other's results: the cluster's
@@ -147,8 +148,11 @@ def _connect_write(path: str | Path) -> sqlite3.Connection:
 
 
 def _ensure_table(conn: sqlite3.Connection) -> None:
-    """Create the runs and metrics tables if they are not there yet."""
-    conn.executescript(_SCHEMA)
+    """Create the tables of a new database, stamped with the schema version."""
+    if conn.execute("SELECT 1 FROM sqlite_master").fetchone() is None:
+        conn.executescript(
+            f"BEGIN; {_SCHEMA} PRAGMA user_version = {_SCHEMA_VERSION}; COMMIT;"
+        )
 
 
 def _query_ro(path: str | Path, sql: str, params: tuple = ()) -> list[tuple]:
