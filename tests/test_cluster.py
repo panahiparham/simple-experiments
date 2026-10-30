@@ -583,7 +583,7 @@ EXPERIMENT = Experiment(
 )
 
 if __name__ == "__main__":
-    run(EXPERIMENT, lambda configs, seeds: [{} for _ in seeds])
+    run(EXPERIMENT, lambda configs, seeds, record: [{} for _ in seeds])
 """
 
 
@@ -945,7 +945,7 @@ def squeue(tmp_path, repo, monkeypatch):
 
 
 def delete(local: Path, *args: str) -> None:
-    run(experiment_at(local), lambda configs, seeds: [], ["delete", *args])
+    run(experiment_at(local), lambda configs, seeds, record: [], ["delete", *args])
 
 
 def test_deleting_a_mirrored_run_deletes_it_on_the_cluster(

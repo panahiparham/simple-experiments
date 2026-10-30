@@ -34,15 +34,15 @@ class Cfg:
     NAME: str = "dqn"
 
 
-def process(configs, seeds):
+def process(configs, seeds, record):
     return [{"reward": (np.arange(2), np.arange(2.0) + seed)} for seed in seeds]
 
 
-def refuse(configs, seeds):
+def refuse(configs, seeds, record):
     raise AssertionError("nothing should have been computed")
 
 
-def recompute(configs, seeds):
+def recompute(configs, seeds, record):
     return [{"reward": (np.arange(2), np.full(2, -1.0))} for _ in seeds]
 
 
@@ -520,7 +520,7 @@ class Cfg:
     LR: float = 1e-3
 
 
-def process(configs, seeds):
+def process(configs, seeds, record):
     return [{"reward": (np.arange(2), np.arange(2.0) + s)} for s in seeds]
 
 
@@ -614,7 +614,7 @@ class Cfg:
     LR: float = 1e-3
 
 
-def process(configs, seeds):
+def process(configs, seeds, record):
     # Every shard waits until a second one has started, which only happens when
     # shards run at the same time.
     started = RESULTS / "started"
