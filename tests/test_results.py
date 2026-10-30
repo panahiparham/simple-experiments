@@ -151,6 +151,23 @@ def test_saving_a_run_again_replaces_every_metric_it_stored(experiment):
     assert stored == {"reward": [1.0, 1.0], "loss": None}
 
 
+def test_merging_a_rerun_replaces_every_metric_of_the_merged_run(experiment):
+    """A run rerun by a later sweep keeps only the rerun's metrics once its
+    part is merged into a database already holding the run.
+    """
+    shard = plan_experiment(experiment)[0]
+    old = {"reward": (np.arange(2), np.zeros(2)), "loss": (np.arange(1), np.ones(1))}
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [old])
+    merge_parts(experiment)
+    with ResultWriter(experiment, "1") as writer:
+        writer.save(shard, [{"reward": (np.arange(2), np.ones(2))}])
+    merge_parts(experiment)
+
+    stored = stored_values(experiment, shard, "reward", "loss")
+    assert stored == {"reward": [1.0, 1.0], "loss": None}
+
+
 def test_a_result_per_run_is_required(experiment):
     shard = plan_experiment(experiment)[0]
     with (
