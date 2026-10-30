@@ -158,6 +158,30 @@ def test_a_redundant_result_is_stored_compressed(experiment):
     )
 
 
+@pytest.mark.parametrize(
+    "series",
+    [
+        (np.arange(3), np.zeros(4)),
+        (np.arange(3.0), np.zeros(3)),
+        (np.arange(6).reshape(2, 3), np.zeros(2)),
+        (np.arange(1), np.float64(0.0)),
+    ],
+    ids=["count mismatch", "float steps", "2-d steps", "scalar values"],
+)
+def test_steps_must_pair_up_with_values(experiment, series):
+    """A metric whose steps do not give one integer step per value is refused,
+    and nothing of the shard is stored.
+    """
+    shard = plan_experiment(experiment)[0]
+
+    with (
+        ResultWriter(experiment, "0") as writer,
+        pytest.raises(ValueError, match="reward"),
+    ):
+        writer.save(shard, [{"reward": series} for _ in shard.runs])
+
+    assert completed(experiment)[shard.component] == set()
+
 
 # --- merging ----------------------------------------------------------------
 
