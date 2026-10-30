@@ -69,6 +69,16 @@ worker's shards one after another. A worker finishes one component's shards
 before it starts the next, so components with different resource needs never
 run side by side.
 
+`record` maps each metric a component's runs must store to a description of
+how the project should record it, for example
+`record={"final_x": "last", "loss": ("window", 100)}`. The harness passes it to
+the shard function and reads only its names. It is not part of a run's id, so
+asking for a new metric keeps every run id: a run counts as done only once it
+stores every metric named in `record`, and a sweep recomputes just the runs
+that lack one. A rerun replaces every metric the run stored, so a run's
+metrics always come from one execution. Deleting a component's runs still
+removes every stored run.
+
 ### Run the experiment
 
 ```python
@@ -78,7 +88,7 @@ import numpy as np
 from experiment import run
 
 
-def process_shard(configs, seeds):
+def process_shard(configs, seeds, record):
     results = []
     for config, seed in zip(configs, seeds):
         rng = np.random.default_rng(seed)
@@ -94,8 +104,9 @@ if __name__ == "__main__":
     run(EXPERIMENT, process_shard)
 ```
 
-The shard function's only contract is `(configs, seeds) -> one result per
-run`, in the order given. A result maps metric names to a `(steps, values)` pair: a 1-d
+The shard function's only contract is `(configs, seeds, record) -> one result
+per run`, in the order given, where `record` is the shard's component's
+recording spec. A result maps metric names to a `(steps, values)` pair: a 1-d
 integer array of the step each value was recorded at, and the values, one per
 step. Each metric is stored and loaded on its own. The function can loop, vectorise, or
 call out elsewhere - the harness does not care.
