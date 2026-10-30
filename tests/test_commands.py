@@ -23,7 +23,12 @@ import experiment as experiment_package
 from experiment.commands import _split_cluster_flags, parse_overrides, run
 from experiment.design import Component, Experiment, SlurmResources
 from experiment.plan import Phase, Shard
-from experiment.results import completed, load_metric, load_runs
+from experiment.results import (
+    completed,
+    load_metric,
+    load_runs,
+    stored_runs,
+)
 
 PACKAGE_ROOT = Path(experiment_package.__file__).resolve().parents[1]
 
@@ -490,6 +495,21 @@ def test_delete_without_seed_or_run_id_removes_the_whole_component(experiment):
     run(experiment, refuse, ["delete", "--component", "a", "--yes"])
     assert completed(experiment)["a"] == set()
     assert len(completed(experiment)["b"]) == 2
+
+
+def test_deleting_a_component_reaches_runs_lacking_a_recorded_metric(experiment):
+    """A run stored before its component asked for a new metric is unfinished,
+    but deleting the component still removes it.
+    """
+    run(experiment, process, ["sweep"])
+    a, b = experiment.components
+    asking = dataclasses.replace(
+        experiment, components=[dataclasses.replace(a, record={"loss": None}), b]
+    )
+
+    run(asking, refuse, ["delete", "--component", "a", "--yes"])
+
+    assert stored_runs(asking)["a"] == set()
 
 
 def test_delete_needs_a_component(experiment):

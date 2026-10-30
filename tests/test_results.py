@@ -268,6 +268,69 @@ def test_results_survive_a_merge(experiment):
     assert load_runs(experiment, "a").height == before == 3
 
 
+# --- finishing runs ---------------------------------------------------------
+
+
+def recording(experiment: Experiment, *names: str) -> Experiment:
+    """The same experiment with component ``a`` asking for ``names``."""
+    a, b = experiment.components
+    recorded = dataclasses.replace(a, record=dict.fromkeys(names))
+    return dataclasses.replace(experiment, components=[recorded, b])
+
+
+def test_a_run_lacking_a_recorded_metric_is_not_finished(experiment):
+    """Asking for a metric the stored runs never produced makes them
+    outstanding again, while components that ask for nothing new stay done.
+    """
+    run_everything(experiment)
+
+    done = completed(recording(experiment, "reward", "loss"))
+
+    assert {name: len(runs) for name, runs in done.items()} == {"a": 0, "b": 2}
+
+
+def test_a_run_storing_every_recorded_metric_is_finished(experiment):
+    """Runs that already store everything asked for are not computed again."""
+    run_everything(experiment)
+
+    asked = recording(experiment, "reward")
+
+    assert plan_experiment(asked, done=completed(asked)) == []
+
+
+def test_metrics_of_two_stored_copies_never_finish_a_run_together(experiment):
+    """A merged copy with one recorded metric and an unmerged copy with the
+    other come from different executions, so the run is not finished.
+    """
+    shard = plan_experiment(experiment)[0]
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [result(r.seed) for r in shard.runs])
+    merge_parts(experiment)
+    with ResultWriter(experiment, "1") as writer:
+        writer.save(shard, [{"loss": (np.arange(1), np.ones(1))}])
+
+    done = completed(recording(experiment, "reward", "loss"))
+
+    assert done[shard.component] == set()
+
+
+def test_one_complete_copy_finishes_a_run_beside_a_partial_one(experiment):
+    """A run stays finished when a newer, unmerged copy of it lacks a recorded
+    metric that the merged copy holds.
+    """
+    shard = plan_experiment(experiment)[0]
+    full = {"reward": (np.arange(2), np.zeros(2)), "loss": (np.arange(1), np.ones(1))}
+    with ResultWriter(experiment, "0") as writer:
+        writer.save(shard, [full])
+    merge_parts(experiment)
+    with ResultWriter(experiment, "1") as writer:
+        writer.save(shard, [{"reward": (np.arange(2), np.ones(2))}])
+
+    done = completed(recording(experiment, "reward", "loss"))
+
+    assert done[shard.component] == {shard.runs[0].id}
+
+
 # --- deleting -----------------------------------------------------------------
 
 
