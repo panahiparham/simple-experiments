@@ -180,10 +180,17 @@ def _from_blob(blob: bytes) -> np.ndarray:
     return np.load(io.BytesIO(zlib.decompress(blob)), allow_pickle=False)
 
 
-def _series_blobs(series: Sequence[np.ndarray]) -> tuple[bytes, bytes]:
-    """Serialise a metric's steps and values."""
-    steps, values = series
-    return _to_blob(np.asarray(steps, dtype=np.int64)), _to_blob(values)
+def _series_blobs(name: str, series: Sequence[np.ndarray]) -> tuple[bytes, bytes]:
+    """Serialise a metric's steps and values, checking they pair up."""
+    steps, values = map(np.asarray, series)
+    if not np.issubdtype(steps.dtype, np.integer) or steps.ndim != 1:
+        raise ValueError(f"metric {name!r} needs a 1-d integer array of steps")
+    if values.ndim == 0 or len(values) != len(steps):
+        raise ValueError(
+            f"metric {name!r} has {len(steps)} step(s) but values of shape "
+            f"{values.shape}"
+        )
+    return _to_blob(steps.astype(np.int64)), _to_blob(values)
 
 
 def completed(experiment: Experiment) -> dict[str, set[str]]:
@@ -243,7 +250,8 @@ class ResultWriter:
             The number of runs actually stored, excluding any already present.
 
         Raises:
-            ValueError: If there is not exactly one result per run.
+            ValueError: If there is not exactly one result per run, or a
+                metric's steps do not pair up with its values.
         """
         if len(results) != len(shard.runs):
             raise ValueError(
@@ -251,7 +259,7 @@ class ResultWriter:
                 f"run(s) but {len(results)} result(s) came back"
             )
         blobs = [
-            {name: _series_blobs(series) for name, series in result.items()}
+            {name: _series_blobs(name, series) for name, series in result.items()}
             for result in results
         ]
         conn = self._connection(shard.component)
