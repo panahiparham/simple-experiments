@@ -193,6 +193,11 @@ def _series_blobs(name: str, series: Sequence[np.ndarray]) -> tuple[bytes, bytes
     return _to_blob(steps.astype(np.int64)), _to_blob(values)
 
 
+def _pair_from_blobs(steps: bytes, values: bytes) -> tuple[np.ndarray, np.ndarray]:
+    """Read back one stored metric's steps and values."""
+    return _from_blob(steps), _from_blob(values)
+
+
 def completed(experiment: Experiment) -> dict[str, set[str]]:
     """List the runs an experiment has already stored, per component.
 
@@ -462,7 +467,7 @@ def load_runs(experiment: Experiment, component: str) -> pl.DataFrame:
 
 def load_metric(
     experiment: Experiment, component: str, name: str, run_ids: Sequence[str]
-) -> list[np.ndarray | None]:
+) -> list[tuple[np.ndarray, np.ndarray] | None]:
     """Load one metric of several runs.
 
     Args:
@@ -472,8 +477,8 @@ def load_metric(
         run_ids: The runs to load it for.
 
     Returns:
-        One array per run, in ``run_ids`` order, ``None`` where a run stored no
-        such metric.
+        One ``(steps, values)`` pair per run, in ``run_ids`` order, ``None``
+        where a run stored no such metric.
 
     Raises:
         KeyError: If the component has no stored run with one of the ids.
@@ -481,17 +486,20 @@ def load_metric(
     placeholders = ", ".join("?" for _ in run_ids)
     runs_query = f"SELECT run_id FROM runs WHERE run_id IN ({placeholders})"
     metric_query = (
-        "SELECT run_id, value FROM metrics "
+        "SELECT run_id, steps, value FROM metrics "
         f"WHERE name = ? AND run_id IN ({placeholders})"
     )
     known: set[str] = set()
-    blobs: dict[str, bytes] = {}
+    blobs: dict[str, tuple[bytes, bytes]] = {}
     for path in _database_paths(experiment, component):
         known.update(run for (run,) in _query_ro(path, runs_query, tuple(run_ids)))
-        for run, blob in _query_ro(path, metric_query, (name, *run_ids)):
-            blobs.setdefault(run, blob)
+        for run, steps, values in _query_ro(path, metric_query, (name, *run_ids)):
+            blobs.setdefault(run, (steps, values))
 
     missing = [run for run in run_ids if run not in known]
     if missing:
         raise KeyError(f"{component!r} has no stored run(s) {missing}")
-    return [_from_blob(blobs[run]) if run in blobs else None for run in run_ids]
+    return [
+        _pair_from_blobs(*blobs[run]) if run in blobs else None
+        for run in run_ids
+    ]

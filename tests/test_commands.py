@@ -49,7 +49,7 @@ def recompute(configs, seeds):
 def rewards(experiment, component):
     run_ids = load_runs(experiment, component).sort("seed")["run_id"].to_list()
     loaded = load_metric(experiment, component, "reward", run_ids)
-    return [array.tolist() for array in loaded]
+    return [values.tolist() for _, values in loaded]
 
 
 @pytest.fixture

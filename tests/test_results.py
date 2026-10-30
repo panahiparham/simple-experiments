@@ -402,14 +402,14 @@ def run_ids_by_seed(experiment: Experiment, component: str) -> list[str]:
     return load_runs(experiment, component).sort("seed")["run_id"].to_list()
 
 
-def test_a_metric_loads_one_array_per_run_in_the_order_asked(experiment):
+def test_a_metric_loads_one_series_per_run_in_the_order_asked(experiment):
     run_everything(experiment)
     merge_parts(experiment)
     run_ids = run_ids_by_seed(experiment, "a")[::-1]
 
     loaded = load_metric(experiment, "a", "reward", run_ids)
 
-    assert [array.tolist() for array in loaded] == [
+    assert [values.tolist() for _, values in loaded] == [
         [2.0, 3.0, 4.0, 5.0], [1.0, 2.0, 3.0, 4.0], [0.0, 1.0, 2.0, 3.0]
     ]
 
@@ -424,8 +424,9 @@ def test_a_metric_keeps_its_dtype_and_shape(experiment):
     [loaded] = load_metric(experiment, shard.component, "lengths", [shard.runs[0].id])
 
     assert loaded is not None
-    assert loaded.dtype == np.int32
-    assert np.array_equal(loaded, padded)
+    _, values = loaded
+    assert values.dtype == np.int32
+    assert np.array_equal(values, padded)
 
 
 def test_a_run_without_the_metric_loads_as_none(experiment):
@@ -464,4 +465,4 @@ def test_a_metric_loads_across_parts_and_mirrors(experiment):
 
     loaded = load_metric(experiment, "a", "reward", run_ids)
 
-    assert [array[0] for array in loaded] == [0.0, 1.0, 2.0]
+    assert [values[0] for _, values in loaded] == [0.0, 1.0, 2.0]
