@@ -115,10 +115,20 @@ def _part_paths(experiment: Experiment, component: str) -> list[Path]:
 def _databases_in(root: Path, experiment: Experiment, component: str) -> list[Path]:
     """A component's parts under ``root``, then its merged database there.
 
-    Parts come first because they hold runs newer than the merge.
+    Parts come first because they hold runs newer than the merge. Each is
+    first brought to the current schema, a mirror too: the next sync replaces
+    it with the other machine's copy, which is upgraded again when read.
     """
     parts = root / f"{experiment.name}.parts" / component
-    return sorted(parts.glob("part-*.db")) + sorted(root.glob(f"{component}.db"))
+    paths = sorted(parts.glob("part-*.db")) + sorted(root.glob(f"{component}.db"))
+    return _upgraded(paths)
+
+
+def _upgraded(paths: list[Path]) -> list[Path]:
+    """``paths``, after bringing each database to the current schema."""
+    for path in paths:
+        _connect_write(path).close()
+    return paths
 
 
 def _mirrored_paths(experiment: Experiment, component: str) -> list[Path]:
