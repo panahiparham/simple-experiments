@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import dataclasses
 import sqlite3
+from contextlib import closing
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -16,10 +18,13 @@ from experiment.design import Component, Experiment
 from experiment.hypers import traced
 from experiment.plan import Shard, plan_experiment
 from experiment.results import (
+    _SCHEMA_VERSION,
     ResultWriter,
+    _migrate_schema_1,
     _part_path,
     _parts_dir,
     _query_ro,
+    _to_blob,
     clear_results,
     completed,
     database_path,
@@ -85,6 +90,214 @@ def test_each_component_is_merged_into_its_own_database(experiment):
     merge_parts(experiment)
     stored = sorted(p.name for p in experiment.results_dir.glob("*.db"))
     assert stored == ["a.db", "b.db"]
+
+
+# --- schema versions --------------------------------------------------------
+
+
+SCHEMA_1 = """
+CREATE TABLE runs (
+    run_id TEXT PRIMARY KEY, config_id TEXT NOT NULL, seed INTEGER NOT NULL,
+    config TEXT NOT NULL
+);
+CREATE TABLE metrics (
+    run_id TEXT NOT NULL, name TEXT NOT NULL, value BLOB NOT NULL,
+    PRIMARY KEY (run_id, name)
+);
+"""
+
+
+def create_schema_1_database(path: Path, metrics: dict[str, np.ndarray]) -> None:
+    """A database as simple-experiments 0.1.0 created it, with no version stamp,
+    holding one run ``old`` that stored ``metrics``.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.executescript(SCHEMA_1)
+        conn.execute("INSERT INTO runs VALUES ('old', 'c', 0, '{\"NAME\": \"dqn\"}')")
+        conn.executemany(
+            "INSERT INTO metrics VALUES ('old', ?, ?)",
+            [(name, _to_blob(value)) for name, value in metrics.items()],
+        )
+        conn.commit()
+
+
+def stamp(path: Path, version: int) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(f"PRAGMA user_version = {version}")
+
+
+def test_new_databases_record_the_schema_version(experiment):
+    """A worker's part and the merged database both carry the current version."""
+    run_everything(experiment)
+    part = _part_path(experiment, "a", "0")
+    assert _query_ro(part, "PRAGMA user_version") == [(_SCHEMA_VERSION,)]
+    merge_parts(experiment)
+    merged = database_path(experiment, "a")
+    assert _query_ro(merged, "PRAGMA user_version") == [(_SCHEMA_VERSION,)]
+
+
+def test_reading_a_database_on_a_newer_schema_is_refused(experiment):
+    """Results written by a newer simple-experiments are never misread."""
+    run_everything(experiment)
+    merge_parts(experiment)
+    stamp(database_path(experiment, "a"), _SCHEMA_VERSION + 1)
+    with pytest.raises(RuntimeError, match=f"schema {_SCHEMA_VERSION + 1}"):
+        load_runs(experiment, "a")
+
+
+def test_writing_to_a_database_on_a_newer_schema_is_refused(experiment):
+    """A schema this version does not know is never modified."""
+    run_everything(experiment)
+    merge_parts(experiment)
+    stamp(database_path(experiment, "a"), _SCHEMA_VERSION + 1)
+    with pytest.raises(RuntimeError, match=f"schema {_SCHEMA_VERSION + 1}"):
+        delete_runs(experiment, "a", ["x"])
+
+
+# --- migrating from schema 1 ------------------------------------------------
+
+
+def merge_a_sweep(experiment: Experiment) -> None:
+    """Store and merge every run of the experiment, as a new sweep would."""
+    with ResultWriter(experiment, "0") as writer:
+        for shard in plan_experiment(experiment):
+            writer.save(shard, [result(r.seed) for r in shard.runs])
+    merge_parts(experiment)
+
+
+@pytest.mark.parametrize(
+    ("lengths", "returns", "steps", "values"),
+    [
+        pytest.param(
+            [3, 2, 4], [1.0, 2.0, 3.0], [3, 5, 9], [1.0, 2.0, 3.0], id="one env"
+        ),
+        pytest.param(
+            [[2, 3, 0], [4, 0, 0]],
+            [[1.0, 2.0, 0.0], [3.0, 0.0, 0.0]],
+            [4, 8, 10],
+            [1.0, 3.0, 2.0],
+            id="padded envs",
+        ),
+        pytest.param([], [], [], [], id="no episodes"),
+    ],
+)
+def test_episode_metrics_are_stepped_at_the_end_of_each_episode(
+    experiment, lengths, returns, steps, values
+):
+    """Writing to a 0.1.0 database pairs each episode with the step of the run it
+    ended at: every env takes one step per env step, so an env's own step counts
+    ``n_envs`` steps of the run, and the envs' episodes interleave in time.
+    """
+    metrics = {
+        "episode_length": np.array(lengths, dtype=np.int32),
+        "undiscounted_return": np.array(returns, dtype=np.float32),
+    }
+    create_schema_1_database(database_path(experiment, "a"), metrics)
+    merge_a_sweep(experiment)
+
+    [(return_steps, migrated)] = load_metric(
+        experiment, "a", "interaction.return", ["old"]
+    )
+    [(length_steps, _)] = load_metric(
+        experiment, "a", "interaction.episode_length", ["old"]
+    )
+    assert return_steps.tolist() == length_steps.tolist() == steps
+    assert migrated.tolist() == values
+
+
+def test_migrated_episode_metrics_are_float32(experiment):
+    """Migrated lengths are float32 like returns, as rl-jax records every metric."""
+    metrics = {
+        "episode_length": np.array([3, 2], dtype=np.int32),
+        "undiscounted_return": np.array([1.0, 2.0], dtype=np.float32),
+    }
+    create_schema_1_database(database_path(experiment, "a"), metrics)
+    merge_a_sweep(experiment)
+    for name in ("interaction.episode_length", "interaction.return"):
+        [(_, values)] = load_metric(experiment, "a", name, ["old"])
+        assert values.dtype == np.float32
+
+
+def test_a_migrated_database_keeps_its_runs(experiment):
+    """Migrating rewrites metrics only: the old run is still stored beside the
+    sweep merged into it.
+    """
+    metrics = {
+        "episode_length": np.array([3], dtype=np.int32),
+        "undiscounted_return": np.array([1.0], dtype=np.float32),
+    }
+    create_schema_1_database(database_path(experiment, "a"), metrics)
+    merge_a_sweep(experiment)
+    run_ids = load_runs(experiment, "a")["run_id"].to_list()
+    assert "old" in run_ids
+    assert len(run_ids) == 4
+
+
+@pytest.mark.parametrize(
+    "where",
+    [
+        pytest.param(lambda e: database_path(e, "a"), id="merged"),
+        pytest.param(lambda e: _part_path(e, "a", "0"), id="part"),
+        pytest.param(lambda e: e.results_dir / "cluster" / "a.db", id="cluster"),
+        pytest.param(lambda e: e.results_dir / "local" / "a.db", id="local"),
+    ],
+)
+def test_loading_from_a_schema_1_database_migrates_it(experiment, where):
+    """Loading results is enough to upgrade a 0.1.0 database, wherever it is: a
+    notebook never writes, and a mirror is read before the other machine has
+    upgraded its own copy.
+    """
+    metrics = {
+        "episode_length": np.array([3, 2], dtype=np.int32),
+        "undiscounted_return": np.array([1.0, 2.0], dtype=np.float32),
+    }
+    create_schema_1_database(where(experiment), metrics)
+    [(steps, values)] = load_metric(experiment, "a", "interaction.return", ["old"])
+    assert steps.tolist() == [3, 5]
+    assert values.tolist() == [1.0, 2.0]
+
+
+def test_a_schema_1_part_merges_once_migrated(experiment):
+    """A part left by a sweep interrupted under 0.1.0 merges like any other."""
+    metrics = {
+        "episode_length": np.array([3, 2], dtype=np.int32),
+        "undiscounted_return": np.array([1.0, 2.0], dtype=np.float32),
+    }
+    create_schema_1_database(_part_path(experiment, "a", "0"), metrics)
+    assert merge_parts(experiment) == 1
+    [(steps, _)] = load_metric(experiment, "a", "interaction.return", ["old"])
+    assert steps.tolist() == [3, 5]
+
+
+def test_a_database_another_process_migrated_first_is_left_alone(experiment):
+    """Two processes may open a 0.1.0 database at once. The one that loses the
+    race finds it migrated under the write lock, rather than failing on the
+    renamed metrics or rewriting them.
+    """
+    path = database_path(experiment, "a")
+    metrics = {
+        "episode_length": np.array([3, 2], dtype=np.int32),
+        "undiscounted_return": np.array([1.0, 2.0], dtype=np.float32),
+    }
+    create_schema_1_database(path, metrics)
+    with closing(sqlite3.connect(path)) as late:
+        load_runs(experiment, "a")
+        _migrate_schema_1(late, path)
+    [(steps, _)] = load_metric(experiment, "a", "interaction.return", ["old"])
+    assert steps.tolist() == [3, 5]
+
+
+def test_a_database_with_another_metric_is_left_untouched(experiment):
+    """A metric 0.1.0's users never stored has no known steps, so the database
+    is refused whole rather than partly migrated.
+    """
+    path = database_path(experiment, "a")
+    create_schema_1_database(path, {"loss": np.arange(3.0)})
+    before = path.read_bytes()
+    with pytest.raises(RuntimeError, match="loss"):
+        merge_a_sweep(experiment)
+    assert path.read_bytes() == before
 
 
 # --- writing ----------------------------------------------------------------
