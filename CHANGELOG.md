@@ -1,7 +1,11 @@
 # Changelog
 
-All notable changes to this project are documented here. Before 1.0, a minor
-release may break the API.
+All notable changes to this project are documented here. The format is based
+on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
+adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
+1.0, a minor release may break the API.
+
+## [Unreleased]
 
 ## [0.2.0] - 2026-11-01
 
@@ -25,5 +29,6 @@ release may break the API.
 First release: declarative sweeps, sharded runs, one SQLite results database
 per component, and a CLI shared between local and SLURM execution.
 
+[Unreleased]: https://github.com/panahiparham/simple-experiments/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/panahiparham/simple-experiments/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/panahiparham/simple-experiments/releases/tag/v0.1.0
