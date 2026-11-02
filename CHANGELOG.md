@@ -19,10 +19,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ### Changed
 
-- Shard functions take a third `record` argument and return each metric as a
-  `(steps, values)` pair (#24).
-- `load_metric` returns a `(steps, values)` pair per run (#24).
-- Saving a stored run again replaces all of its metrics (#24).
+- **Breaking:** Shard functions take a third `record` argument and return each
+  metric as a `(steps, values)` pair (#24).
+- **Breaking:** `load_metric` returns a `(steps, values)` pair per run (#24).
+- **Breaking:** Saving a stored run again replaces all of its metrics (#24).
 
 ## [0.1.0] - 2026-10-24
 
