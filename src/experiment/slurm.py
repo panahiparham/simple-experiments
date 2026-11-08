@@ -620,6 +620,8 @@ def dispatch(  # noqa: PLR0913
         array = _submit(cfg, _sbatch_argv(
             cfg, resources,
             f"--dependency=afterok:{plan or '<plan-id>'}",
+            # Slurm otherwise leaves a job whose dependency failed pending forever.
+            "--kill-on-invalid-dep=yes",
             f"--array=0-{workers - 1}",
             "--job-name=sweep",
             f"--output={rundir}/logs/sweep-%A_%a.out",
@@ -632,6 +634,7 @@ def dispatch(  # noqa: PLR0913
         merge = _submit(cfg, _sbatch_argv(
             cfg, cheap,
             f"--dependency=afterok:{array or '<array-id>'}",
+            "--kill-on-invalid-dep=yes",
             "--job-name=merge",
             f"--output={rundir}/logs/merge-%j.out",
             wrap=_job_command(rundir, run_py_rel, venv_path, "sweep",
