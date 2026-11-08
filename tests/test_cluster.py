@@ -130,6 +130,14 @@ def jobs_starting_mps(out: str) -> list[str]:
     ]
 
 
+def jobs_killed_on_invalid_dependency(out: str) -> list[str]:
+    return [
+        line.split("--job-name=", 1)[1].split(" ", 1)[0]
+        for line in out.strip().splitlines()
+        if "--kill-on-invalid-dep=yes" in line
+    ]
+
+
 def experiment_at(
     results_dir: Path, slurm: SlurmResources | None = None
 ) -> Experiment:
@@ -628,6 +636,16 @@ def test_each_sweep_job_waits_for_the_one_before_it(cluster, repo, capsys):
     out = capsys.readouterr().out
     assert "afterok:<plan-id>" in out, "the array does not wait for the plan"
     assert "afterok:<array-id>" in out, "the merge does not wait for the array"
+
+
+def test_a_failed_sweep_job_cancels_the_jobs_waiting_on_it(cluster, repo, capsys):
+    cluster()
+
+    dispatch_sweep(repo, 4)
+
+    assert jobs_killed_on_invalid_dependency(capsys.readouterr().out) == [
+        "sweep", "merge"
+    ]
 
 
 def test_only_the_array_job_asks_for_a_gpu(cluster, repo, capsys):
