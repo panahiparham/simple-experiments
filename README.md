@@ -27,7 +27,7 @@ Install a release by its tag, so your project upgrades only when you change it:
 ```toml
 # pyproject.toml
 [tool.uv.sources]
-simple-experiments = { git = "https://github.com/panahiparham/simple-experiments", tag = "v0.2.0" }
+simple-experiments = { git = "https://github.com/panahiparham/simple-experiments", tag = "v0.2.1" }
 ```
 
 Before 1.0, a minor release may break the API. [CHANGELOG.md](CHANGELOG.md)
