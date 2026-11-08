@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-08
+
 ### Fixed
 
 - A failed SLURM plan or array task cancels the sweep jobs waiting on it,
@@ -34,6 +36,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 First release: declarative sweeps, sharded runs, one SQLite results database
 per component, and a CLI shared between local and SLURM execution.
 
-[Unreleased]: https://github.com/panahiparham/simple-experiments/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/panahiparham/simple-experiments/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/panahiparham/simple-experiments/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/panahiparham/simple-experiments/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/panahiparham/simple-experiments/releases/tag/v0.1.0

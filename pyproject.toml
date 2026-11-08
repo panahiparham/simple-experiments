@@ -1,6 +1,6 @@
 [project]
 name = "simple-experiments"
-version = "0.2.0"
+version = "0.2.1"
 description = "Declarative sweeps, sharded runs, and a SQLite results store."
 readme = "README.md"
 requires-python = ">=3.13"
