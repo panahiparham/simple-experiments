@@ -7,6 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed SLURM plan or array task cancels the sweep jobs waiting on it,
+  instead of leaving them pending forever (#28).
+
 ## [0.2.0] - 2026-11-01
 
 ### Added
